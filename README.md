@@ -41,5 +41,8 @@ uk-intros-analyses/
   are able to make public.
   
 Mapping files for the England, Wales and Scotland in the spatial data are taken from the [Global Adminstrative Database](https://gadm.org/).
-Mapping files for Northern Irish counties were taken from [Open Data NI] (https://www.opendatani.gov.uk/dataset?tags=Counties)
+
+Mapping files for Northern Irish counties were taken from [Open Data NI](https://www.opendatani.gov.uk/dataset?tags=Counties)
+
 Mapping files for the channel islands were taken from https://gist.github.com/markmarkoh
+
