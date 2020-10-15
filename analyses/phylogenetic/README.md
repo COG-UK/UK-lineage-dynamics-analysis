@@ -24,4 +24,4 @@ The ids for sequences  used in these analyses can be found in `data/phylogenetic
 
 
 ### BEAST analysis
-The analysis used in the preliminary clock-rate analysis as well as those which estimated timetrees and reconstructed discrete traits (dta) can be reproduced with the provided xmls and the developmental BEAST branch `approximateTreeLikelihood` at the coomit c8cc55d4. 
+The analysis used in the preliminary clock-rate analysis as well as those which estimated timetrees and reconstructed discrete traits (dta) can be reproduced with the provided xmls and the developmental BEAST branch `approximateTreeLikelihood` at the commit c8cc55d4. 
