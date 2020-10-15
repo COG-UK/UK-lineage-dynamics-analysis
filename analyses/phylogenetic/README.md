@@ -20,7 +20,7 @@ phylogenetic
         └── B.fixedRootPrior.skygrid-20200720.xml
 ```
 ## Overview
-The ids for sequences  used in these analyses can be found in `data/phylogenetic/metadata.csv` with the appropriate acknowledgements in `data/phylogenetic/GISAID_acknowledgements.csv`. The sequences themselves can be downloaded from COG-UK and GISAID. The phylogenetic trees that are used as data in the 'timetree' analysis can be found in `data/phylogenetic/dataTrees` and were estimated using the COG-UK phylogenetic pipeline grapevine commit 11bff38 (https://github.com/COG-UK/grapevine@11bff38). 
+The ids for sequences  used in these analyses can be found in `data/phylogenetic/metadata.csv` with the appropriate acknowledgements in `data/phylogenetic/GISAID_acknowledgements.csv`. The sequences themselves can be downloaded from COG-UK and GISAID. The phylogenetic trees that are used as data in the 'timetree' analysis can be found in `data/phylogenetic/dataTrees` and were estimated using the COG-UK phylogenetic pipeline - grapevine commit 11bff38 (https://github.com/COG-UK/grapevine). 
 
 
 ### BEAST analysis
