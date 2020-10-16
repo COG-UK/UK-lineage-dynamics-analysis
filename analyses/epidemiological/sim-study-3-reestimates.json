@@ -1,0 +1,23 @@
+{
+    "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+    "data": {
+        "url": "results/sim-study-3-reestimates.csv"
+    },
+    "mark": "point",
+    "encoding": {
+        "x": {
+            "field": "alpha",
+            "type": "quantitative"
+        },
+        "y": {
+            "field": "beta",
+            "type": "quantitative",
+            "scale": {"zero": false}
+        },
+        "color": {
+            "field": "exit_code",
+            "type": "nominal"
+        }
+    },
+    "config": {"legend": {"disable": true}}
+}

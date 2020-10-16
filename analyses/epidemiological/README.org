@@ -1,0 +1,3209 @@
+#+TITLE: COVID UK Introductions
+#+OPTIONS: num:nil
+#+OPTIONS: toc:2
+
+#+HTML_HEAD: <link rel="stylesheet" type="text/css" href=".css/stylesheet.css" />
+#+HTML_HEAD: <script src="https://cdn.jsdelivr.net/npm/vega@5.13.0"></script> 
+#+HTML_HEAD: <script src="https://cdn.jsdelivr.net/npm/vega-lite@4.14.1"></script> 
+#+HTML_HEAD: <script src="https://cdn.jsdelivr.net/npm/vega-embed@6.10.0"></script>
+#+HTML_HEAD: <script src="https://cdn.jsdelivr.net/npm/vega-lite-api@0.11.0"></script>
+
+** Data sources
+   
+- =jhu-data.csv=
+- =un-population.csv=
+- =home-office.csv=
+- =extra-uk-arrivals.csv=
+- =clusters_summary_del.csv=
+- =IATA_CountryLevel_Dec_May.csv=
+
+Due to ethical and legal restrictions we cannot upload either
+=clusters_summary_del.csv= nor =IATA_CountryLevel_Dec_May.csv=. To download the
+JHU and UN data we have the following script, =download-data.sh=.
+
+#+begin_src sh :tangle download-data.sh 
+wget "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+mv time_series_covid19_deaths_global.csv raw-data/jhu-deaths.csv
+
+wget "https://population.un.org/wpp/Download/Files/1_Indicators%20(Standard)/CSV_FILES/WPP2019_TotalPopulationBySex.csv"
+mv WPP2019_TotalPopulationBySex.csv raw-data/un-population.csv
+#+end_src
+
+We retrieved data of percentage of country populations living in poverty from
+the World Bank, as curated by the team at Our World in data and extracted
+estimates of percentages of populations living in poverty from Elvidge /et al/
+(2009) to supplement the World Bank measurements.
+
+** Cleaning deaths time series
+
+The spatial resolution in the JHU data set varies between countries, in some
+instances we need to sum over the different states, such as Australia, and in
+some instances we only select the region with the most cases, such as with
+France where various provinces are not counted into the primary French death
+toll. 
+
+The path to the data has the =2020-08-19= directory in it because this is a time
+stamped version of the data that was downloaded on that date.
+
+#+begin_src R :tangle clean-jhu-deaths.R 
+  library(dplyr)
+  library(magrittr)
+  library(purrr)
+  library(reshape2)
+
+  x <- read.csv("../../data/epidemiological/jhu-deaths.csv",
+                header = TRUE,
+                stringsAsFactors = FALSE) %>%
+      select(Province.State,
+             Country.Region,
+             starts_with("X")) %>%
+      filter(Country.Region != "Diamond Princess",
+             Country.Region != "MS Zaandam") %>%
+      melt(id.vars = c("Province.State","Country.Region"),
+           value.name = "cumulative_deaths",
+           variable.name = "date_string") %>%
+      mutate(date = as.Date(date_string, format = "X%m.%d.%y"))
+
+  countries_needing_cleaning <- x %>%
+      filter(Province.State != "") %>%
+      use_series("Country.Region") %>%
+      unique
+
+  subset_aus <- x %>%
+      filter(Country.Region == "Australia") %>%
+      group_by(Country.Region, date) %>%
+      summarise(cumulative_deaths = sum(cumulative_deaths))
+
+  subset_can <- x %>%
+      filter(Country.Region == "Canada",
+             Province.State != "Grand Princess",
+             Province.State != "Diamond Princess") %>%
+      group_by(Country.Region, date) %>%
+      summarise(cumulative_deaths = sum(cumulative_deaths))
+
+  subset_chn <- x %>%
+      filter(Country.Region == "China") %>%
+      group_by(Country.Region, date) %>%
+      summarise(cumulative_deaths = sum(cumulative_deaths))
+
+  subset_dnk <- x %>%
+      filter(Country.Region == "Denmark", Province.State == "") %>%
+      group_by(Country.Region, date) %>%
+      summarise(cumulative_deaths = sum(cumulative_deaths))
+
+  subset_fra <- x %>%
+      filter(Country.Region == "France", Province.State == "") %>%
+      group_by(Country.Region, date) %>%
+      summarise(cumulative_deaths = sum(cumulative_deaths))
+
+  subset_nld <- x %>%
+      filter(Country.Region == "Netherlands", Province.State == "") %>%
+      group_by(Country.Region, date) %>%
+      summarise(cumulative_deaths = sum(cumulative_deaths))
+
+  subset_gbr <- x %>%
+      filter(Country.Region == "United Kingdom", Province.State == "") %>%
+      group_by(Country.Region, date) %>%
+      summarise(cumulative_deaths = sum(cumulative_deaths))
+
+  result_ <- x %>%
+      filter(not(is.element(el = Country.Region, set = countries_needing_cleaning))) %>%
+      select(Country.Region, cumulative_deaths, date)
+
+  result <- rbind(result_,
+                  subset_aus,
+                  subset_can,
+                  subset_chn,
+                  subset_dnk,
+                  subset_fra,
+                  subset_nld,
+                  subset_gbr) %>%
+      rename(location = Country.Region)
+
+#+end_src
+
+Some cruise ship data is scattered throughout the JHU data so this needs to be
+filtered out.
+
+The JHU data has the cumulative number of deaths in each location on each date,
+but we want the actual number of deaths on each day so for each location we
+calculate the daily difference in the cumulative number of deaths and use that.
+For some days, the cumulative count decreases due to changes in the official
+numbers, on these days we set the daily value to zero. Since differencing
+reduces the length of a vector by one, we remove the first date from all of the
+countries data.
+
+#+begin_src R :tangle clean-jhu-deaths.R 
+first_date <- min(result$date)
+
+diffed_deaths <- function(location_str) {
+    tmp <- filter(result, location == location_str)
+    death_diff <- diff(tmp$cumulative_deaths)
+    tmp <- filter(tmp, date > first_date)
+    tmp$daily_deaths <- pmax(0, death_diff)
+    return(tmp)
+}
+
+location_names <- unique(result$location)
+
+diffed_result <- location_names %>%
+    map(diffed_deaths) %>%
+    bind_rows
+#+end_src
+
+There is a spike in the number of deaths from China on the 17th of April after a
+large number of deaths had been added to the official numbers.
+
+#+begin_src  
+> diffed_result %>% filter(location == "China", date > "2020-04-14", date < "2020-04-20")
+  location cumulative_deaths       date daily_deaths
+1    China              3346 2020-04-15            1
+2    China              3346 2020-04-16            0
+3    China              4636 2020-04-17         1290
+4    China              4636 2020-04-18            0
+5    China              4636 2020-04-19            0
+> nrow(filter(diffed_result, location == "China", date < "2020-04-17"))
+[1] 85
+> head(filter(diffed_result, location == "China"))
+  location cumulative_deaths       date daily_deaths
+1    China                18 2020-01-23            1
+2    China                26 2020-01-24            8
+3    China                42 2020-01-25           16
+4    China                56 2020-01-26           14
+5    China                82 2020-01-27           26
+6    China               131 2020-01-28           49
+#+end_src
+
+We want to account for these deaths, so we will uniformly distribute them over
+the previous 85 days in the data set. To see why it is 85 days, recall that the
+data only goes back to the 23rd of January. We will use a new variable =result=
+to distinguish between the data frames pre- and post-adjustment.
+
+#+begin_src R :tangle clean-jhu-deaths.R 
+result <- diffed_result
+
+result[result$location == "China" & result$date == "2020-04-17", "daily_deaths"] <- 0
+.mask <- result$location == "China" & result$date < "2020-04-17"
+death_adjustment <- 1290 / nrow(result[.mask,])
+result[.mask, "daily_deaths"] <- result[.mask, "daily_deaths"] + death_adjustment
+#+end_src
+
+Then we can do the same check to make sure things looks sensible.
+
+#+begin_src 
+> result %>% filter(location == "China", date > "2020-04-14", date < "2020-04-20")
+  location cumulative_deaths       date daily_deaths
+1    China              3346 2020-04-15     16.17647
+2    China              3346 2020-04-16     15.17647
+3    China              4636 2020-04-17      0.00000
+4    China              4636 2020-04-18      0.00000
+5    China              4636 2020-04-19      0.00000
+#+end_src
+
+Since some datasets consider Kosovo as part of Serbia, we will aggregate these
+locations in the deaths time series.
+ 
+#+begin_src R :tangle clean-jhu-deaths.R 
+.kosovo_mask <- result$location == "Kosovo"
+.kosovo_cumulative_deaths <- result[.kosovo_mask, "cumulative_deaths"]
+.kosovo_daily_deaths <- result[.kosovo_mask, "daily_deaths"]
+result_rm_kosovo <- filter(result, location != "Kosovo")
+.serbia_mask <- result_rm_kosovo$location == "Serbia"
+result_rm_kosovo[.serbia_mask, "cumulative_deaths"] <- result_rm_kosovo[.serbia_mask, "cumulative_deaths"] + .kosovo_cumulative_deaths
+result_rm_kosovo[.serbia_mask, "daily_deaths"] <- result_rm_kosovo[.serbia_mask, "daily_deaths"] + .kosovo_daily_deaths
+#+end_src
+
+Then we save the results to a file =output/clean-jhu-deaths.csv= for use in the
+epidemiological model.
+
+#+begin_src R :tangle clean-jhu-deaths.R 
+write.table(x = result_rm_kosovo,
+            file = "results/clean-jhu-deaths.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+** Cleaning population sizes
+
+The =Medium= variant of the data corresponds to a sensible choice of
+assumptions, more details can be found at the site below
+
+https://population.un.org/wpp/DefinitionOfProjectionVariants/
+
+A suggested citation for this data set can be obtained at the following page
+
+https://population.un.org/wpp/Download/Standard/CSV/
+
+#+begin_src R :tangle clean-un-population.R
+library(dplyr)
+
+x <- read.csv("../../data/epidemiological/un-population.csv",
+              header = TRUE,
+              stringsAsFactors = FALSE) %>%
+    filter(Variant == "Medium", Time == 2020) %>%
+    select(Location, PopTotal) %>%
+    rename(location = Location, population_size = PopTotal)
+
+jhu_deaths <- read.csv("results/clean-jhu-deaths.csv") %>%
+    mutate(date = as.Date(date),
+           deaths = daily_deaths) %>%
+  filter(location != "United Kingdom",
+         location != "West Bank and Gaza")
+
+
+mutate_location_name <- function(df, old_name, new_name) {
+  mask <- df$location == old_name
+  df[mask,"location"] <- new_name
+  return(df)
+}
+
+x <- mutate_location_name(x, "Russian Federation", "Russia")
+x <- mutate_location_name(x, "Bolivia (Plurinational State of)", "Bolivia")
+x <- mutate_location_name(x, "Republic of Korea", "Korea, South")
+x <- mutate_location_name(x, "United States of America", "US")
+x <- mutate_location_name(x, "Iran (Islamic Republic of)", "Iran")
+x <- mutate_location_name(x, "Brunei Darussalam", "Brunei")
+x <- mutate_location_name(x, "United Republic of Tanzania", "Tanzania")
+x <- mutate_location_name(x, "Syrian Arab Republic", "Syria")
+x <- mutate_location_name(x, "China, Taiwan Province of China", "Taiwan*")
+x <- mutate_location_name(x, "Venezuela (Bolivarian Republic of)", "Venezuela")
+x <- mutate_location_name(x, "Republic of Moldova", "Moldova")
+x <- mutate_location_name(x, "Viet Nam", "Vietnam")
+x <- mutate_location_name(x, "Myanmar", "Burma")
+x <- mutate_location_name(x, "Congo", "Congo (Brazzaville)")
+x <- mutate_location_name(x, "Democratic Republic of the Congo", "Congo (Kinshasa)")
+x <- mutate_location_name(x, "Côte d'Ivoire", "Cote d'Ivoire")
+x <- mutate_location_name(x, "Lao People's Democratic Republic", "Laos")
+
+stopifnot(length(setdiff(jhu_deaths$location, x$location)) == 0)
+
+write.table(x = x,
+            file = "results/clean-un-population.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+** Cleaning IATA data
+
+Cleaning the IATA data is a little bit tricky because it requires expanding each
+record of the original data frame into multiple records in the clean one and
+inputting zeros where there are no records of travellers. The resulting code is
+very inefficient but only takes a couple of minutes to run so there is not point
+in optimising it.
+
+#+begin_src R :tangle clean-iata.R 
+library(magrittr)
+library(dplyr)
+library(purrr)
+library(memoise)
+
+x <- read.csv("../../data/epidemiological/IATA_CountryLevel_Dec_May.csv",
+              header = TRUE,
+              stringsAsFactors = FALSE) %>%
+    filter(month != "", country_origin != "United Kingdom") %>%
+    select(country_origin, month, total_volume) %>%
+    rename(location = country_origin, num_travellers = total_volume)
+
+
+month_total_factory <- function(x) {
+    function(country_str, month_str) {
+        maybe_count <- x %>%
+            filter(location == country_str,
+                   grepl(pattern = month_str, x = month)) %>%
+            use_series("num_travellers")
+        switch(length(maybe_count)+1,
+               0,
+               maybe_count,
+               stop("Bad country and month: ", country_str, month_str))
+    }
+}
+
+month_total <- month_total_factory(x)
+m_month_total <- memoise(month_total)
+
+location_names <- unique(x$location)
+num_locations <- length(location_names)
+
+dates <- seq(from = as.Date("2019-12-01"),
+             to = as.Date("2020-04-30"),
+             by = 1)
+
+
+month_global_total_factory <- function(x) {
+    month_totals_df <- x %>%
+        group_by(month) %>%
+        summarise(total_travellers = sum(num_travellers))
+
+    function(month_str) {
+        maybe_count <- month_totals_df %>%
+            filter(grepl(pattern = month_str, x = month)) %>%
+            use_series("total_travellers")
+        if (length(maybe_count) == 1) {
+            return(maybe_count)
+        } else {
+            stop("Bad month: ", month_str)
+        }
+    }
+}
+
+month_global_total <- month_global_total_factory(x)
+m_month_global_total <- memoise(month_global_total)
+
+
+
+record_list <- function(country_str, date_obj) {
+    month_str <- format(date_obj, format = "%b")
+
+    month_passenger_count <- m_month_total(country_str, month_str)
+    month_total_count <- m_month_global_total(month_str)
+
+    daily_average <- month_passenger_count / month_total_count
+
+    data.frame(location = country_str,
+               date = date_obj,
+               daily_average = daily_average)
+}
+
+result <- cross2(location_names, dates) %>%
+    map(lift_dl(record_list)) %>% 
+    bind_rows
+
+write.table(x = result,
+            file = "results/clean-iata.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+** Cleaning Home Office data
+
+We only need a couple of columns for the Home Office data and that is already in
+a reasonably tidy state so it is a simple select and rename.
+
+#+begin_src R :tangle clean-home-office.R 
+library(dplyr)
+
+result <- read.csv("../../data/epidemiological/home-office.csv") %>%
+    mutate(total_air_travels = as.numeric(gsub(pattern = ",",
+                                               replacement = "",
+                                               x = Total.air.arrivals))) %>%
+    select(Date,total_air_travels) %>%
+    rename(date = Date)
+
+write.table(x = result,
+            file = "results/clean-home-office.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+** Cleaning non-air travel
+
+We can re-use a lot of the code from the IATA cleaning script to get a CSV of
+the number of passengers arriving via methods other than air.
+
+#+begin_src R :tangle clean-non-air-travel.R 
+library(reshape2)
+library(dplyr)
+library(magrittr)
+library(dplyr)
+library(purrr)
+library(memoise)
+
+x <- read.csv("../../data/epidemiological/extra-uk-arrivals.csv", 
+              header = TRUE,
+              stringsAsFactors = FALSE) %>%
+    mutate(country = gsub(pattern = " total", replacement = "", x = X)) %>%
+    select(country, matches("*daily")) %>%
+    melt(id.vars = "country", variable.name = "month_var", value.name = "daily_count")
+
+daily_number_factory <- function(x) {
+    function(country_str, month_str) {
+        maybe_count <- x %>%
+            filter(country == country_str,
+                   grepl(pattern = month_str, x = month_var)) %>%
+            use_series("daily_count")
+        switch(length(maybe_count)+1,
+               NA,
+               maybe_count,
+               stop("Bad country and month: ", country_str, month_str))
+    }
+}
+
+daily_number <- daily_number_factory(x)
+m_daily_number <- memoise(daily_number)
+
+record_list <- function(country_str, date_obj) {
+    month_str <- format(date_obj, format = "%b")
+
+    daily_passenger_count <- m_daily_number(country_str, month_str)
+
+
+    data.frame(location = country_str,
+               date = date_obj,
+               daily_average = daily_passenger_count)
+}
+
+
+location_names <- unique(x$country)
+
+dates <- seq(from = as.Date("2019-12-01"),
+             to = as.Date("2020-04-30"),
+             by = 1)
+
+result <- cross2(location_names, dates) %>% map(lift_dl(record_list)) %>% bind_rows
+
+write.table(x = result,
+            file = "results/clean-non-air-travel.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+** Cleaning poverty data I
+
+We extracted Table 1 from Elvidge /et al/ (2009) using =tabula-1.2.1= and
+adjusted the header for clarity. This data was then stored in the file
+=data/global_population_data/2020-09-07/elvidge2009global.csv=. The following
+script, =clean-elvidge-poverty.R=, was then used to further clean this dataset.
+
+#+begin_src R :tangle clean-elvidge-poverty.R :noweb yes :exports none
+library(dplyr)
+library(purrr)
+library(magrittr)
+
+<<primary-source-locations-defn>>
+
+rm(threshold_date)
+rm(threshold_level)
+rm(final_count_df)
+rm(sorted_final_counts)
+rm(cumulative_proportions)
+rm(mask)
+rm(threshold)
+#+end_src
+
+We define a convenience function for adjusting the names of locations. 
+
+#+name: mutate-location-name-defn
+#+begin_src R :tangle clean-elvidge-poverty.R
+## @@ mutate-location-name-defn @@
+
+mutate_location_name <- function(df, old_name, new_name) {
+  mask <- df$location == old_name
+  df[mask,"location"] <- new_name
+  return(df)
+}
+#+end_src
+
+Then we read in the data and adjust some of the location names so that they
+match those used in the JHU database.
+
+#+begin_src R :tangle clean-elvidge-poverty.R 
+poverty_df <- read.csv("../../data/epidemiological/elvidge2009global.csv") %>%
+  rename(location = country) %>%
+  select(location,
+         estimated_percentage_in_poverty) %>%
+  mutate_location_name("Czech Republic", "Czechia") %>%
+  mutate_location_name("South Korea", "Korea, South") %>%
+  mutate_location_name("United States", "US") %>%
+  mutate_location_name("UAE", "United Arab Emirates")
+
+
+write.table(x = poverty_df,
+            file = "results/clean-elvidge2009global.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+Unfortunately, the Elvidge dataset has some dubious values in it, so we will
+primarily use a World Bank dataset that has been curated by Our World in Data.
+
+** Cleaning poverty data II 
+
+The script for cleaning the second set of poverty data is called
+ =clean-owid-poverty.R=
+
+#+begin_src R :tangle clean-owid-poverty.R :noweb yes :exports none
+library(dplyr)
+library(purrr)
+library(magrittr)
+
+<<primary-source-locations-defn>>
+
+rm(threshold_date)
+rm(threshold_level)
+rm(final_count_df)
+rm(sorted_final_counts)
+rm(cumulative_proportions)
+rm(mask)
+rm(threshold)
+
+<<mutate-location-name-defn>>
+#+end_src
+
+Were possible we adjust location names to match those in the JHU dataset. For
+locations where there is not a World Bank estimate, we default to the ones from
+the previous section.
+
+#+begin_src R :tangle clean-owid-poverty.R 
+poverty_df <- read.csv("../../data/epidemiological/share-of-the-population-living-in-extreme-poverty.csv") %>%
+  rename(location = Entity,
+         year = Year,
+         poverty_percentage = Share.of.the.population.living.in.extreme.poverty....) %>%
+  select(location,year,poverty_percentage) %>%
+  mutate_location_name("Czech Republic", "Czechia") %>%
+  mutate_location_name("South Korea", "Korea, South") %>%
+  mutate_location_name("United States", "US")
+
+
+missing_locs <- setdiff(primary_source_locations, poverty_df$location)
+
+poverty_elvidge_df <- read.csv("results/clean-elvidge2009global.csv") %>%
+  rename(poverty_percentage = estimated_percentage_in_poverty) %>%
+  filter(location %in% missing_locs) %>%
+  mutate(year = 2009)
+
+poverty_df <- bind_rows(poverty_df, poverty_elvidge_df) %>%
+  group_by(location) %>%
+  summarise(latest_poverty_percentage = poverty_percentage[which.max(year)])
+
+other_mean <- poverty_df %>%
+  filter(!(location %in% primary_source_locations)) %>%
+  use_series("latest_poverty_percentage") %>%
+  mean
+poverty_other_record <- data.frame(location = "other",
+                                   latest_poverty_percentage = other_mean)
+
+
+poverty_df <- poverty_df %>%
+  filter(location %in% primary_source_locations) %>%
+  bind_rows(poverty_other_record) %>%
+  as.data.frame
+
+cat("clean-owid-poverty.R")
+setdiff(primary_source_locations, poverty_df$location)
+stopifnot(length(setdiff(primary_source_locations, poverty_df$location))==0)
+
+
+write.table(x = poverty_df,
+            file = "results/clean-worldbankpoverty.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+** Estimating number of UK arrivals
+
+To estimate the number of arrivals into the UK from each location, we combine
+the data sets and use the formula for each country on each day.
+
+\[
+\text{arrivals} = \text{proportion IATA} \times \text{Home Office number} + \text{non-air numbers}
+\]
+
+#+begin_src R :tangle estimate-arrivals.R
+library(magrittr)
+library(dplyr)
+
+
+iata_df <- read.csv("results/clean-iata.csv") %>%
+    mutate(date = as.Date(date, format = "%Y-%m-%d"))
+
+home_office_df <- read.csv("results/clean-home-office.csv") %>%
+    mutate(date = as.Date(date, format = "%d-%b-%y"))
+
+
+iata_and_ho_df <- left_join(iata_df, home_office_df, by = "date") 
+
+non_air_df <- read.csv("results/clean-non-air-travel.csv") %>%
+    mutate(date = as.Date(date, format = "%Y-%m-%d")) %>%
+    rename(non_air_num = daily_average)
+
+all_arrivals_df <- left_join(iata_and_ho_df, non_air_df) %>%
+    mutate(non_air_num = ifelse(test = is.na(non_air_num), yes = 0, no = non_air_num),
+           estimate = daily_average * total_air_travels + non_air_num) %>%
+    filter(!is.na(estimate))
+
+
+write.table(x = all_arrivals_df,
+            file = "results/estimated-arrivals.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+** Estimating the proportion of people capable of seeding a cluster
+
+Consider a matrix \(A\) where the entry \(A_{i,j}\) is the number of people on
+day \(i\) who have a \(j-1\) day old infection. So the first column of \(A\) is
+the number of people infected on each day and the final column is the number of
+people that die on each day. The upper right corner of the matrix is set to
+zero, assuming there where no deaths prior to those in the data and the bottom
+left corner is =NA= because of censoring to the data. The following function
+takes a vector of the number of deaths on each day, and the number of days from
+infection to death (among those who die from the infection) and returns the
+corresponding \(A\) matrix.
+
+#+name: age-of-infection-matrix-defn
+#+begin_src R :tangle estimate-potential-seeders.R 
+## @@ age-of-infection-matrix-defn @@
+
+age_of_infection_matrix <- function(inf_to_death_days, deaths_vector) {
+    num_days_in_matrix <- length(deaths_vector) + inf_to_death_days
+    result <- matrix(data = NA,
+                     nrow = num_days_in_matrix,
+                     ncol = inf_to_death_days + 1)
+
+    padded_deaths <- c(rep(0, inf_to_death_days),
+                       deaths_vector,
+                       rep(NA, inf_to_death_days))
+
+    for (i in 1:num_days_in_matrix) {
+        result[i,] <- rev(padded_deaths[i + (0:inf_to_death_days)])
+    }
+
+    return(result)
+}
+#+end_src
+
+We assume that once someone experiences symptoms, they will not be able to
+travel any more. So the people that are capable of seeding a cluster in the UK
+are those that are either incubating, or asymptomatic and within the first
+\(d_{\text{latent}} + \d_{\text{infectious}}\) days of their infection. So all
+of the first \(d_{\text{incubating}} + 1\) columns plus a fraction of the
+remaining columns up to \(d_{\text{latent}} + \d_{\text{infectious}} + 1\) make
+up the people who could potentially seed a cluster on each day.
+
+Since the proportion of asymptomatic infections is very uncertain, we keep this
+parameter variable for sensitivity analysis although since most infections
+happen earlier it seems that we should opt for a smaller value.
+
+The =padded_potential_seeders= returns a vector of the total number of potential
+seeders through time given a vector of the deaths on each day. This pads the
+time out in the same way that the age matrix function,
+=age_of_infection_matrix=, result.
+
+#+name: padded-potential-seeders-defn
+#+begin_src R :tangle estimate-potential-seeders.R
+## @@ padded-potential-seeders-defn @@
+
+padded_potential_seeders <- function(age_matrix,
+                                     days_latent,
+                                     days_incubating,
+                                     days_infectious,
+                                     prop_asymptomatic) {
+
+    presymptomatic_cases <- (age_matrix[,0:days_incubating + 1])
+    asymptomatic_cases <- prop_asymptomatic * age_matrix[,(days_incubating + 1):(days_latent + days_infectious) + 1]
+
+    padded_total_seeders <- rowSums(cbind(presymptomatic_cases, asymptomatic_cases))
+
+    return(padded_total_seeders)
+}
+#+end_src
+
+Now to actually estimate the proportion of a country's population that could
+potentially seed a cluster in the UK, we need the number of covid-19 deaths on
+each day in that country the parameters of the infection, and the population of
+the country.
+
+#+name: seeder-proportion-defn
+#+begin_src R :tangle estimate-potential-seeders.R
+## @@ seeder-proportion-defn @@
+
+seeder_proportion <- function(deaths_df,
+                              location_population,
+                              days_latent,
+                              days_incubating,
+                              days_infectious,
+                              prop_asymptomatic,
+                              days_infection_to_death,
+                              infection_fatality_ratio) {
+    if (!setequal(names(deaths_df), c("deaths", "date"))) {
+        stop("Bad dataframe names: ", names(deaths_df))
+    }
+
+
+    age_matrix <- age_of_infection_matrix(days_infection_to_death, deaths_df$deaths)
+
+    potential_seeders <- padded_potential_seeders(age_matrix,
+                                                  days_latent,
+                                                  days_incubating,
+                                                  days_infectious,
+                                                  prop_asymptomatic)
+
+    start_date <- min(deaths_df$date)
+    padding_dates <- seq(from = start_date - days_infection_to_death,
+                         to = start_date - 1,
+                         by = 1)
+
+    total_dates <- c(padding_dates, deaths_df$date)
+
+    data.frame(date = total_dates,
+               seeder_proportion = infection_fatality_ratio * potential_seeders / location_population)
+}
+#+end_src
+
+Finally, we need to use these functions along with the deaths data and the
+population data to estimate the infectious proportion in each country through
+time and write all of this to a CSV at the end. The first step is to read in the
+data and fix up some discrepencies in location names and define parameters of
+covid-19.
+
+The JHU data for West Bank and Gaza is removed because it is unclear how it
+should be merged into the rest of the data.
+
+#+name: jhu-un-location-unification
+#+begin_src R :tangle estimate-potential-seeders.R :noweb no-export
+## @@ jhu-un-location-unification @@
+
+library(dplyr)
+library(purrr)
+
+jhu_deaths <- read.csv("results/clean-jhu-deaths.csv") %>%
+    mutate(date = as.Date(date),
+           deaths = daily_deaths) %>%
+  filter(location != "United Kingdom",
+         location != "West Bank and Gaza")
+
+un_populations <- read.csv("results/clean-un-population.csv")
+
+stopifnot(length(setdiff(jhu_deaths$location, un_populations$location)) == 0)
+#+end_src
+
+When we are estimating the number of people in each state of infection we need
+the parameters for the average amount of time people spend in each state. The
+following point estimates where derived from parameter values reported in the
+literature.
+
+- The number of days between symptom onset to death is estimated to be 18 days
+  [[https://doi.org/10.1016/S1473-3099(20)30243-7]]
+
+#+begin_quote
+... we estimated the mean duration from onset of symptoms to death to be 17·8
+days (95% credible interval [CrI] 16·9–19·2)...
+#+end_quote
+
+- The incubation period was assumed to be 5 days
+  [[https://www.nejm.org/doi/full/10.1056/NEJMOa2001316]]
+
+#+begin_quote
+The mean incubation period was 5.2 days (95% confidence interval [CI], 4.1 to
+7.0)...
+#+end_quote
+
+- \(23 = 5 + 18\) so the days from infection to death has a mean of 23 assuming
+  the duration of the incubation period is independent of the time from symptom
+  onset to death.
+
+- The latent phase was assumemd to finish to finish 2 days before before the
+  onset of symptoms. In [[https://www.nature.com/articles/s41591-020-0869-5]] it was
+  estimated that although transmission can occur substantially before symptom
+  onset \(<10\%\) of transmission occurs prior to 3 days before symptom onset,
+  but likely has a mean closer to 2 days. Since \(3 = 5 - 2\), the days spent
+  latent is 3.
+
+#+begin_quote
+... start of infectiousness at least 2 days before onset and peak infectiousness at
+2 days before to 1 day after onset would be most consistent with this observed
+proportion (Extended Data Fig. 3).
+#+end_quote
+
+- From the same publication, "Infectiousness was estimated to decline quickly
+  within 7 days.", so given the quote below, we set the number of days for which
+  an individual is infectious to 7.
+
+#+begin_quote
+...infectiousness may decline significantly 8 days after symptom onset, as live
+virus could no longer be cultured (according to W\"{o}lfel and colleagues).
+#+end_quote
+
+We define variables storing these parameter values.
+
+#+name: model-parameters
+#+begin_src R :tangle estimate-potential-seeders.R
+## @@ model-parameters @@
+days_latent <- 3
+days_incubating <- 5
+days_infectious <- 7
+prop_asymptomatic <- 0.31
+days_infection_to_death <- 23
+infection_fatality_ratio <- 100
+#+end_src
+
+Then we define a wrapper function that will compute the values for a specific
+location based on the =un_populations= and =jhu_deaths=, we map this over all
+the locations and then bind the results and write them to a CSV:
+=output/estimated-proportion-seeders.csv= for use in subsequent calculations.
+
+Note that when reading the population size there is an additional factor of
+\(10^3\) because the UN population values are reported in thousands.
+
+#+begin_src R :tangle estimate-potential-seeders.R
+location_seeder_props <- function(location_str) {
+    deaths_df <- filter(jhu_deaths, location == location_str) %>%
+        select(date,deaths)
+
+    if (is.element(location_str, un_populations$location)) {
+        pop_size <- 1e3 * un_populations[un_populations$location == location_str, "population_size"]
+    } else {
+        stop("Cannot find a population size for ", location_str)
+    }
+
+    seeder_props <- seeder_proportion(deaths_df,
+                                      pop_size,
+                                      days_latent,
+                                      days_incubating,
+                                      days_infectious,
+                                      prop_asymptomatic,
+                                      days_infection_to_death,
+                                      infection_fatality_ratio)
+
+    seeder_props$location <- location_str
+    return(seeder_props)
+}
+
+
+result <- map(.x = unique(jhu_deaths$location),
+              .f = location_seeder_props) %>%
+  bind_rows %>%
+  filter(date < "2020-07-01")
+
+stopifnot(!any(is.na(result$seeder_proportion)))
+
+write.table(x = result,
+            file = "results/estimated-proportion-seeders.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+We might also be interested in the estimated incidence on each day under this 
+method. This is just a simple scaling and transformation of the data, but we do 
+it in a similar fashion to the functions above partly as a sanity check on the 
+code. Note that because we removed the UK from the =jhu_deaths= above, this 
+result does not include the estimates for the UK; they are drawn from other work
+ in our figures.
+
+#+begin_src R :tangle estimate-potential-seeders.R
+location_num_infections <- function(location_str) {
+    deaths_df <- filter(jhu_deaths, location == location_str) %>%
+        select(date,deaths)
+
+    age_matrix <- age_of_infection_matrix(days_infection_to_death, deaths_df$deaths)
+
+    num_deaths_infs <- age_matrix[,1]
+
+    start_date <- min(deaths_df$date)
+    padding_dates <- seq(from = start_date - days_infection_to_death,
+                         to = start_date - 1,
+                         by = 1)
+
+    total_dates <- c(padding_dates, deaths_df$date)
+
+    data.frame(date = total_dates,
+               num_infs = infection_fatality_ratio * num_deaths_infs,
+               location = location_str)
+}
+
+result <- map(.x = unique(jhu_deaths$location),
+              .f = location_num_infections) %>%
+    bind_rows
+
+write.table(x = result,
+            file = "results/estimated-daily-infections.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+*** Visualisation (HTML version only)
+
+#+begin_export html
+<div id="daily-infections"></div>
+
+<script type="text/javascript" src="daily-infections-visualisation.js"></script>
+#+end_export 
+
+#+begin_src javascript :tangle daily-infections-visualisation.js :exports none
+const incidenceUrl = "http://localhost:8000/results/estimated-daily-infections.csv";
+
+const incidenceChart = vl
+      .markLine({point: true})
+      .data(incidenceUrl)
+      .encode(
+          vl.x().fieldT("date").title("Date"),
+          vl.y().fieldQ("num_infs").title("Estimated daily infections"),
+          vl.color().fieldN("location").title("Source Location"),
+          vl.tooltip(["location"])
+      )
+      .width(700)
+      .height(500)
+      .toJSON();
+
+const deathsUrl = "http://localhost:8000/results/clean-jhu-deaths.csv";
+
+const deathsChart = vl.markLine({point: true})
+      .data(deathsUrl)
+      .encode(
+          vl.x().fieldT("date").title("Date"),
+          vl.y().fieldQ("daily_deaths").title("Daily difference in cumulative deaths"),
+          vl.color().fieldN("location").title("Source Location"),
+          vl.tooltip(["location"])
+      )
+      .width(700)
+      .height(500)
+      .toJSON();
+
+
+const combinedChart = vl.vconcat(incidenceChart,deathsChart).toJSON();
+
+vegaEmbed('#daily-infections', combinedChart);
+#+end_src
+
+** Estimate the introduction index for each of the primary source countries
+
+#+begin_src R :tangle estimate-introduction-index.R :exports none
+library(dplyr)
+library(magrittr)
+library(purrr)
+#+end_src
+
+The current data set is unwieldy because there are lots of locations that have a
+very low probability of having seeded a cluster. To reduce this, we filter for
+those countries that are in the top \(99\%\) of cumulative number of cases at
+the start of May; we exclude the UK to capture more of the external pandemic.
+
+=primary-source-locations-defn=
+#+name: primary-source-locations-defn
+#+begin_src R :tangle estimate-introduction-index.R 
+threshold_date <- as.Date("2020-05-01")
+threshold_level <- 0.99
+
+jhu_deaths_df <- read.csv("results/clean-jhu-deaths.csv") %>%
+    mutate(date = as.Date(date)) %>%
+    filter(location != "United Kingdom")
+
+final_count_df <- jhu_deaths_df %>%
+    filter(date == threshold_date) %>%
+    rename(final_count = cumulative_deaths)
+
+sorted_final_counts <- sort(final_count_df$final_count, decreasing = TRUE)
+cumulative_proportions <- cumsum(sorted_final_counts) / sum(sorted_final_counts)
+mask <- cumulative_proportions <= threshold_level
+threshold <- min(sorted_final_counts[mask])
+
+primary_source_locations <- final_count_df %>%
+    filter(final_count >= threshold) %>%
+    use_series("location")
+#+end_src
+
+The threshold is set to 94. Of the 184 locations in the JHU data set (excluding
+the UK) 53 contribute 99% of the cumulative cases as of May 1 2020, we
+considered these primary sources and aggregated the remaining 131 locations into
+a single "other" category.
+
+#+begin_src  
+> print(threshold)
+[1] 94
+> print(length(primary_source_locations))
+[1] 53
+> print(length(unique(final_count_df$location)))
+[1] 184
+> print(length(filter(final_count_df, final_count < threshold)$location))
+[1] 131
+#+end_src
+
+The file =output/estimated-arrivals.csv= contains our estimates of the total
+number of arrivals into the UK from each country and the file
+=output/estimated-proportion-seeders.csv= contains our estimates of the
+proportion of people in each of those countries that could potentially seed a
+cluster after coming to the UK. We assume that arrival in the UK is independent
+of COVID19 status /if you are not symptomatic/, which means that the estimate of
+the number of people who entered the UK and are capable of seeding a cluster is
+just the product of these estimates.
+
+#+begin_src R :tangle estimate-introduction-index.R 
+prop_potential_seeders <- read.csv("results/estimated-proportion-seeders.csv",
+                                   stringsAsFactors = FALSE) %>%
+    mutate(date = as.Date(date)) %>%
+    dplyr::select(date, location, seeder_proportion)
+
+stopifnot(!any(is.na(prop_potential_seeders$seeder_proportion)))
+stopifnot(all(intersect(primary_source_locations, prop_potential_seeders$location) == primary_source_locations))
+
+estimated_arrivals <- read.csv("results/estimated-arrivals.csv") %>%
+    mutate(date = as.Date(date)) %>%
+    rename(num_arrivals = estimate) %>%
+    dplyr::select(date, location, num_arrivals)
+#+end_src
+
+There are a lot of locations that are either denoted with different strings 
+between the arrivals data and the potential seeders data, so we need to unify 
+these where possible, and for cases where there are locations with no matching 
+COVID-19 deaths data, those locations need to be removed from the arrivals data.
+
+#+begin_src R :tangle estimate-introduction-index.R :noweb no-export
+<<mutate-location-name-defn>>
+
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Czech Republic", "Czechia")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "United States", "US")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Dominican Rep", "Dominican Republic")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Korea (South)", "Korea, South")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Antigua-Barbuda", "Antigua and Barbuda")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Bosnia-Herzegovina", "Bosnia and Herzegovina")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Brunei Darussalam", "Brunei")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Cape Verde", "Cabo Verde")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Central African Rep", "Central African Republic")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Cote D'Ivoire", "Cote d'Ivoire")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "St Kitts-Nevis", "Saint Kitts and Nevis")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "St Lucia", "Saint Lucia")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "St Vincent-Grenad", "Saint Vincent and the Grenadines")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Taiwan", "Taiwan*")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Trinidad-Tobago", "Trinidad and Tobago")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Viet Nam", "Vietnam")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Timor-leste", "Timor-Leste")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Sao Tome-Principe", "Sao Tome and Principe")
+estimated_arrivals <- mutate_location_name(estimated_arrivals, "Macedonia", "North Macedonia")
+
+estimated_arrivals <- filter(estimated_arrivals, location != "Aruba")
+estimated_arrivals <- filter(estimated_arrivals, location != "Bermuda")
+estimated_arrivals <- filter(estimated_arrivals, location != "Bonaire, Saint Eustatius and Saba")
+estimated_arrivals <- filter(estimated_arrivals, location != "Cayman Islands")
+estimated_arrivals <- filter(estimated_arrivals, location != "Cook Islands")
+estimated_arrivals <- filter(estimated_arrivals, location != "Curacao")
+estimated_arrivals <- filter(estimated_arrivals, location != "Falkland Islands")
+estimated_arrivals <- filter(estimated_arrivals, location != "Faroe Islands")
+estimated_arrivals <- filter(estimated_arrivals, location != "French Polynesia")
+estimated_arrivals <- filter(estimated_arrivals, location != "Gibraltar")
+estimated_arrivals <- filter(estimated_arrivals, location != "Greenland")
+estimated_arrivals <- filter(estimated_arrivals, location != "Guadeloupe")
+estimated_arrivals <- filter(estimated_arrivals, location != "Guam")
+estimated_arrivals <- filter(estimated_arrivals, location != "Guernsey")
+estimated_arrivals <- filter(estimated_arrivals, location != "Hong Kong (SAR)")
+estimated_arrivals <- filter(estimated_arrivals, location != "Isle of Man")
+estimated_arrivals <- filter(estimated_arrivals, location != "Jersey")
+estimated_arrivals <- filter(estimated_arrivals, location != "Macao (SAR)")
+estimated_arrivals <- filter(estimated_arrivals, location != "Martinique")
+estimated_arrivals <- filter(estimated_arrivals, location != "Mayotte")
+estimated_arrivals <- filter(estimated_arrivals, location != "Myanmar")
+estimated_arrivals <- filter(estimated_arrivals, location != "New Caledonia")
+estimated_arrivals <- filter(estimated_arrivals, location != "North Mariana Isl")
+estimated_arrivals <- filter(estimated_arrivals, location != "Palau")
+estimated_arrivals <- filter(estimated_arrivals, location != "Puerto Rico")
+estimated_arrivals <- filter(estimated_arrivals, location != "Reunion")
+estimated_arrivals <- filter(estimated_arrivals, location != "Samoa")
+estimated_arrivals <- filter(estimated_arrivals, location != "Solomon Islands")
+estimated_arrivals <- filter(estimated_arrivals, location != "St Barthelemy")
+estimated_arrivals <- filter(estimated_arrivals, location != "St Helena")
+estimated_arrivals <- filter(estimated_arrivals, location != "St Maarten (Dutch Part)")
+estimated_arrivals <- filter(estimated_arrivals, location != "Svalbard")
+estimated_arrivals <- filter(estimated_arrivals, location != "Swaziland")
+estimated_arrivals <- filter(estimated_arrivals, location != "Tonga")
+estimated_arrivals <- filter(estimated_arrivals, location != "Turkmenistan")
+estimated_arrivals <- filter(estimated_arrivals, location != "Turks-Caicos")
+estimated_arrivals <- filter(estimated_arrivals, location != "Vanuatu")
+estimated_arrivals <- filter(estimated_arrivals, location != "Virgin Islands (GB)")
+estimated_arrivals <- filter(estimated_arrivals, location != "Virgin Islands (US)")
+estimated_arrivals <- filter(estimated_arrivals, location != "French Guiana")
+
+stopifnot(all(intersect(primary_source_locations, estimated_arrivals$location) == primary_source_locations))
+#+end_src
+
+Then we can combine these to get the estimated number of arriving people 
+capable of seeding a cluster. Since the time intervals covered by the different 
+data sets do not match up entirely we take their intersection.
+
+#+begin_src R :tangle estimate-introduction-index.R 
+min_date_intersection <- max(min(estimated_arrivals$date), min(prop_potential_seeders$date))
+max_date_intersection <- min(max(estimated_arrivals$date), max(prop_potential_seeders$date))
+
+seeder_numbers <- left_join(prop_potential_seeders,
+                            estimated_arrivals) %>%
+  mutate(num_seeders = seeder_proportion * num_arrivals) %>%
+  filter(date <= max_date_intersection, date >= min_date_intersection)
+
+.mask <- is.na(seeder_numbers$num_seeders)
+seeder_numbers[.mask, "num_arrivals"] <- 0
+seeder_numbers[.mask, "num_seeders"] <- 0
+#+end_src
+
+With the relevant locations identified, the seeders can be filtered by an origin
+within this set and the the contributions of the remaining locations combined
+into an "other" class, the result is the epidemic introduction index.
+
+#+begin_src R :tangle estimate-introduction-index.R 
+eii_data <- seeder_numbers %>%
+    mutate(primary_location = ifelse(test = location %in% primary_source_locations,
+                                     yes = location, no = "other")) %>%
+    group_by(date,primary_location) %>%
+    summarise(num_intros = sum(num_seeders)) %>%
+    filter(!is.na(num_intros))
+
+stopifnot(is.element(el = "Italy", set = unique(eii_data$primary_location)))
+stopifnot(is.element(el = "other", set = unique(eii_data$primary_location)))
+
+write.table(x = eii_data,
+            file = "results/estimated-introduction-index.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+*** Visualisation (HTML version only)
+
+#+begin_export html
+<div id="eii"></div>
+
+<script type="text/javascript" src="eii-visualisation.js"></script>
+#+end_export 
+
+For this figure to be displayed the CSV file with the EII estimates needs to be
+served at =http://localhost:8000/results/estimated-introduction-index.csv=. Running
+=python3 -m http.server 8000= from the =uk-lineages= directory should achieve
+this.
+
+#+begin_src javascript :tangle eii-visualisation.js :exports none
+const dataCsv = "http://localhost:8000/results/estimated-introduction-index.csv"
+
+const chartSpec = vl
+      .markLine({point: true})
+      .data(dataCsv)
+      .encode(
+          vl.x().fieldT("date").title("Date"),
+          vl.y().fieldQ("num_intros").title("Estimated Introduction Index"),
+          vl.color().fieldN("primary_location").title("Source Location"),
+          vl.tooltip(["primary_location"])
+      )
+      .width(700)
+      .height(500)
+      .toJSON();
+
+vegaEmbed('#eii', chartSpec);
+#+end_src
+
+** Estimating the lag distribution I (only simulated data)
+
+We want to study the interval of time between the introduction of an infection
+into the UK and the time of the TMRCA of the resulting cluster. To allow us to
+estimate this, we make a simplifying assumptions which seem reasonable in the
+given setting. We assume the seeding of each cluster is independent of the
+seeding of other clusters. This allows us to treat the introduction times as a
+sample from the distribution of infection arrival times /without replacement/.
+Since there are far more introductions that clusters this seems like a
+reasonable approximation to make.
+
+If the introductions are independent, the day \(G\) on which they entered the UK
+is drawn from the distribution of daily introductions. Let \(f_G(g)\) be the
+probability of the infection being introduced on day \(g\). Then, if the TMRCA
+is on day \(k\) there must have been a lag, \(L\) of \(k-g\) days; let
+\(f_L(j)\) be the probability of a lag of \(j\) days. So the probability,
+\(v_k\), of a TMRCA on day \(k\) is
+
+\[
+\hat{v}_k := \sum_{g} f_G(g)f_L(k-g)
+\]
+
+and then \(v = \hat{v} / |\hat{v}|\). Since each TMRCA is independent, the total
+likelihood is then just the product of the corresponding \(v_k\) on which they
+occurred. We can write a closure for the liklihood function
+=model_1_llhd_factory= which takes a PMF of introductions on each day and the
+number of TMRCAs on each day.
+
+#+begin_src R :tangle simulation-study-1.R 
+model_1_llhd_factory <- function(daily_introduction_prob, daily_tmrca_count) {
+    stopifnot(length(daily_introduction_prob) == length(daily_tmrca_count))
+    num_days <- length(daily_introduction_prob)
+    function(mean_lag) {
+        if (mean_lag > 0) {
+            lag_pmf <- dgeom(x = 0:(num_days - 1), prob = 1 / (1 + mean_lag))
+
+            tmrca_pmf <- numeric(num_days)
+
+            for (ix in 1:num_days) {
+                tmrca_pmf[ix] <- daily_introduction_prob[1:ix] %*% rev(lag_pmf[1:ix])
+            }
+
+            tmrca_pmf <- tmrca_pmf / sum(tmrca_pmf)
+
+            # independence assumption
+            as.numeric(daily_tmrca_count %*% log(tmrca_pmf))
+        } else {
+            -1e10
+        }
+    }
+}
+#+end_src
+
+It is well-known that additional sampling of a phylogeny can push the TMRCA
+backwards in time closer to the origin of the phylogeny. Hence the TMRCA is
+correlated with the size of the reconstructed tree. Because there is no
+appreciable depletion of the susceptible proportion, the order of the clusters
+should not effect their size. Because we have been watching these clusters until
+they have gotten small, there should not be any truncation effects to their
+observed size. __For these reasons we make the simplifying assumption that the
+eventual size of the cluster is indepedendent of when it was seeded.__
+
+*** Simulation study
+
+#+begin_src R :tangle simulation-study-1.R :exports none
+library(dplyr)
+library(ggplot2)
+
+set.seed(1)
+#+end_src
+
+To test that the model we have defined behaves as expected, and that it is
+implemented correctly, we simulate a set of =num_intros= many TMRCA values
+conditional upon the EII.
+
+#+begin_src R :tangle simulation-study-1.R 
+eii_csv <- "results/estimated-introduction-index.csv"
+
+x <- read.csv(eii_csv, stringsAsFactors = FALSE) %>%
+    mutate(date = as.Date(date)) %>%
+    group_by(date) %>%
+    summarise(total_intros = sum(num_intros))
+
+num_intros <- 1000
+intro_dates <- as.integer(x$date - min(x$date))
+intro_dist <- x$total_intros / sum(x$total_intros)
+
+rand_intro_dates <- sample(intro_dates,
+                           size =  num_intros,
+                           replace = TRUE,
+                           prob = intro_dist)
+
+mean_delay <- 10 # days
+rand_delays <- rgeom(n = num_intros, prob = 1 - mean_delay / (1 + mean_delay))
+
+rand_tmrcas <- rand_delays + rand_intro_dates
+#+end_src
+
+#+begin_src R :tangle simulation-study-1.R :exports none
+sim_data_fig <- ggplot() +
+    geom_line(data = x,
+              mapping = aes(x = date, y = total_intros)) +
+    geom_histogram(data = data.frame(tmrca = min(x$date) + rand_tmrcas),
+                   mapping = aes(x = tmrca)) +
+    labs(y = "Frequency", x = "Date") +
+    theme_classic()
+
+ggsave("results/sim-data-fig.png", sim_data_fig)
+#+end_src
+
+#+begin_export html 
+<div class="figure grid-figure">
+  <img width=700px src="results/sim-data-fig.png">
+</div>
+#+end_export
+
+Then we can take the likelihood function defined above too see who informative
+the data is for the mean lag and evaluate it for different values of the mean
+lag parameter. The resulting log-likelihood profile is shown in the following
+figure. *Note* that =dplyr::full_join= will introduce =NA= s, so we will fill
+these in with zero, which is a sensible value in both cases, since the
+probability of introduction is very small for those values and in the case of
+the TMRCAs, the missing data is literally zero.
+
+#+begin_src R :tangle simulation-study-1.R 
+tmrca_table <- table(rand_tmrcas)
+tmrca_df <- data.frame(day_num = as.integer(names(tmrca_table)),
+                       num_tmrca = as.integer(tmrca_table))
+
+intro_probs_df <- data.frame(day_num = intro_dates,
+                             intro_prob = intro_dist)
+
+sim_data <- dplyr::full_join(intro_probs_df, tmrca_df)
+
+na_mask <- is.na(sim_data$num_tmrca)
+sim_data[na_mask,"num_tmrca"] <- 0
+rm(na_mask)
+
+na_mask <- is.na(sim_data$intro_prob)
+sim_data[na_mask,"intro_prob"] <- 0
+rm(na_mask)
+
+
+model_1_llhd <- model_1_llhd_factory(sim_data$intro_prob, sim_data$num_tmrca)
+#+end_src
+
+#+begin_src R :tangle simulation-study-1.R :exports none
+mean_lag_mesh <- seq(from = 3, to = 20, length = 100)
+plot_df <- data.frame(mean_lag = mean_lag_mesh,
+                      llhd = purrr::as_vector(purrr::map(.x = mean_lag_mesh, .f = model_1_llhd)))
+
+sim_llhd_fig <- ggplot(plot_df, aes(x = mean_lag, y = llhd)) +
+    geom_line() +
+    geom_vline(xintercept = mean_delay, linetype = "dashed") +
+    labs(x = "Expected lag duration", y = "Log-likelihood") +
+    theme_classic()
+
+ggsave("results/sim-llhd-fig.png", sim_llhd_fig)
+#+end_src
+
+#+begin_export html 
+<div class="figure grid-figure">
+  <img width=700px src="results/sim-llhd-fig.png">
+</div>
+#+end_export
+
+** Estimating the lag distribution II (only simulated data)
+
+#+begin_src R :tangle simulation-study-2.R :exports none
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(purrr)
+library(stats)
+
+set.seed(1)
+#+end_src
+
+The lag between an arrival of a case into the UK and the observed TMRCA should
+decrease with the size of the cluster. However, deriving the distribution of
+this lag is difficult so we will settle for a phenomonological description where
+the average lag decreases to an asymptote in the size of the cluster. The
+functional form is \(\text{lag} = \alpha + \beta/n \) where \(n\) is the size of
+the cluster.
+
+#+begin_src R :tangle simulation-study-2.R 
+eii_csv <- "results/estimated-introduction-index.csv"
+
+x <- read.csv(eii_csv, stringsAsFactors = FALSE) %>%
+    mutate(date = as.Date(date)) %>%
+    group_by(date) %>%
+    summarise(total_intros = sum(num_intros))
+
+num_intros <- 1000
+intro_dates <- as.integer(x$date - min(x$date))
+intro_dist <- x$total_intros / sum(x$total_intros)
+
+rand_intro_dates <- sample(intro_dates,
+                           size =  num_intros,
+                           replace = TRUE,
+                           prob = intro_dist)
+#+end_src
+
+The start of the simulation is the same as in the previous example, but now we
+need to simulate the size of the cluster prior to simulating the lag.
+
+#+begin_src R :tangle simulation-study-2.R 
+mean_size <- 8
+rand_sizes <- rgeom(n = num_intros,
+                    prob = 1 - mean_size / (1 + mean_size)) + 2
+
+mean_delay <- 8 + 20 / rand_sizes
+rand_delays <- rgeom(n = num_intros,
+                     prob = 1 - mean_delay / (1 + mean_delay))
+rand_tmrcas <- rand_delays + rand_intro_dates
+
+tmrca_df <- data.frame(date = rand_tmrcas,
+                       delay = rand_delays,
+                       size = rand_sizes)
+intro_prob_df <- data.frame(date = intro_dates,
+                            prob = intro_dist)
+
+sim_data <- dplyr::full_join(tmrca_df,
+                             intro_prob_df,
+                             by = "date")
+#+end_src
+
+The following figure shows both what the raw data looks like as it would be
+observed, and the correlation between the hidden delay and the observed cluster
+size.
+
+#+begin_src R :tangle simulation-study-2.R :exports none
+time_series_fig <- ggplot() +
+    geom_line(data = intro_prob_df,
+              mapping = aes(x = date, y = prob)) +
+    geom_histogram(data = tmrca_df,
+                   mapping = aes(x = date, y = ..density..),
+                   alpha = 0.2) +
+    labs(x = "Date", y = "Density") +
+    theme_classic()
+
+scatter_plot_fig <- ggplot(data = tmrca_df,
+       mapping = aes(x = size,
+                     y = delay)) +
+    geom_jitter() +
+    scale_y_log10() +
+    geom_smooth(method = "lm", colour = "black") +
+    labs(x = "Cluster size", y = "Lag") +
+    theme_classic()
+
+simulation_fig <- cowplot::plot_grid(time_series_fig, 
+                                     scatter_plot_fig,
+                                     nrow = 2)
+
+ggsave("results/sim-study-2-fig.png", simulation_fig)
+#+end_src
+
+#+begin_export html 
+<div class="figure grid-figure">
+  <img width=700px src="results/sim-study-2-fig.png">
+</div>
+#+end_export
+
+The definition of the simulated TMRCA values above can be abstracted into the
+following function which will be helpful later for model criticism. Note that
+one of the parameters to this is a function which returns random sizes, this
+will be important later when we want to generate realistic cluster sizes, there
+is also the =mean_from_size= function which requires a specified lag model.
+
+=r_tmrcas_function=
+#+name: r_tmrcas_function
+#+BEGIN_SRC R
+#' Return a vector of TMRCA values
+#'
+#' @param n integer number of TMRCA values
+#' @param intro_dates integer vector of dates
+#' @param intro_dist numeric vector of date weights
+#' @param r_size function which takes an integer and returns that many sizes
+#' @param mean_from_size function from size to the mean lag
+#'
+r_tmrcas <- function(n, intro_dates, intro_dist, r_size, mean_from_size) {
+  r_intro_dates <- sample(intro_dates,
+                          size = n,
+                          replace = TRUE,
+                          prob = intro_dist)
+  r_sizes <- r_size(n)
+  mean_delay <- mean_from_size(r_sizes)
+  r_delay <- rgeom(n = n,
+                   prob = 1 / (1 + mean_delay))
+  return(r_intro_dates + r_delay)
+}
+#+END_SRC
+
+The likelihood for this extended model is very similar, although we need to
+disaggregate the data because they now have an additional attribute of cluster
+size. This could be made to be a bit more efficient by pre-calculating only the
+required values of the log-PMF but this is fast enough for our curren purposes
+and is easier to read. We use the =log_sum_exp= function to avoid underflow. The
+functions here are pure which is important because we will want to reuse them
+later.
+
+=llhd_factory=
+#+name: llhd_factory
+#+begin_src R :tangle simulation-study-2.R 
+  log_sum_exp <- function(x) {
+    m <- max(x)
+    log(sum(exp(x - m))) + m
+  }
+
+  model_2_llhd_factory <- function(daily_intro_log_probs, tmrca_date, cluster_size) {
+      stopifnot(length(tmrca_date) == length(cluster_size))
+      stopifnot(max(tmrca_date) <= length(daily_intro_log_probs))
+      num_intros <- length(tmrca_date)
+      max_possible_lag <- max(tmrca_date)
+
+      function(params) {
+          a <- params[1]
+          b <- params[2]
+          if (min(params) >= 0) {
+              llhd <- 0
+              mean_lags <- a + b / cluster_size
+              for (ix in 1:num_intros) {
+                  tmrca <- tmrca_date[ix]
+                  mean_lag <- mean_lags[ix]
+                  lag_lpmf <- dgeom(x = 0:max_possible_lag,
+                                    prob = 1 / (1 + mean_lag),
+                                    log = TRUE)
+                  llhd <- llhd +
+                      log_sum_exp(daily_intro_log_probs[1:tmrca] +
+                                  rev(lag_lpmf[1:tmrca]))
+              }
+          } else {
+              llhd <- - .Machine$double.xmax
+          }
+          return(llhd)
+      }
+  }
+#+end_src
+
+Then we just need to reshape the data a little bit to be in a form suitables for
+using with the resulting =llhd= function. In doing so we fill in the
+introduction probability for very late arrivals with machine epsilon to avoid
+numerical issues resulting from taking the log of zero.
+
+#+begin_src R :tangle simulation-study-2.R
+tmrca_dates <- sim_data %>%
+    filter(not(is.na(size))) %>%
+    use_series("date")
+cluster_sizes <- sim_data %>%
+    filter(not(is.na(size))) %>%
+    use_series("size")
+
+daily_intro_log_probs <- dplyr::left_join(data.frame(date = 0:229,
+                                                     dummy = NA),
+                                          intro_prob_df,
+                                          by = "date") %>%
+    mutate(safe_prob = ifelse(test = is.na(prob),
+                              yes = .Machine$double.eps,
+                              no = prob)) %>%
+    use_series("safe_prob") %>%
+    log
+
+model_2_llhd <- model_2_llhd_factory(daily_intro_log_probs,
+                                     tmrca_dates,
+                                     cluster_sizes)
+#+end_src
+
+#+begin_src R :tangle simulation-study-2.R :exports none
+a_vals <- seq(from = 2, to = 20, by = 2)
+b_vals <- seq(from = 5, to = 80, by = 5)
+z_vals <- cross2(a_vals, b_vals) %>%
+    map(compose(model_2_llhd,as_vector)) %>%
+    as_vector
+ab_vals <- cross2(a_vals, b_vals) %>%
+    transpose %>%
+    map(as_vector) %>%
+    set_names(c("a", "b"))
+
+result <- data.frame(alpha = sprintf("%02d", ab_vals$a),
+                     beta = sprintf("%02d", ab_vals$b),
+                     llhd = z_vals)
+
+write.table(result,
+            file = "results/sim-study-2-llhds.csv",
+            quote = FALSE,
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+We numerically estimated the maximum of this likelihood surface using =nlm=,
+starting the algorithm at several intial conditions randomly drawn from an
+exponential distribution to test for robustness of the estimate. Note that we
+use a log-transform on the parameters to ensure that the values given to the
+likelihood function are always positive.
+
+=numeric-mle=
+#+name: numeric-mle
+#+begin_src R :tangle simulation-study-2.R
+estimate_as_df <- function(est) {
+  est %>%
+    use_series("estimate") %>%
+    exp %>%
+    set_names(c("alpha", "beta")) %>%
+    as.list %>%
+    as.data.frame
+}
+
+numeric_mle <- 10 %>%
+  rerun(log(rexp(n = 2,
+                 rate = 1 / c(10, 10)))) %>%
+  map(~ nlm(f = function(p) { - model_2_llhd(exp(p)) },
+            p = .x)) %>%
+  keep(~ .x$code == 1) %>%
+  map(estimate_as_df) %>%
+  bind_rows
+#+end_src
+
+The function =estimate_as_df= is a helper function to translate the results of
+the minimisation to a record of a data frame. Filtering by the =code= attribute
+is used to ensure that we only record the values where the diagnostics of =nlm=
+are confident that the minima was found.
+
+#+begin_src R :tangle simulation-study-2.R :exports none
+write.table(x = numeric_mle,
+            file = "results/sim-study-2-mle.csv",
+            quote = FALSE,
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+The following figure shows a heatmap of the likelihood surface under the
+simulated data. A red circle is used to indicate the true values of the
+parameters used to simulate the data.
+
+#+begin_export html
+<div id="simulation-llhd-heatmap"></div>
+
+<script type="text/javascript" src="results/simulation-llhd-visualisation.js"></script>
+#+end_export 
+
+For some bizarre reason, the heatmap breaks, possibly because there are too many
+different values being shown, but this figure is buggy in a few ways and could
+probably use an overhaul. The geometry is correct, but the implementation is a
+bit ugly.
+
+#+begin_src javascript :tangle simulation-llhd-visualisation.js :exports none
+const simLlhdCsv = "http://localhost:8000/results/sim-study-2-llhds.csv";
+
+const llhdRectangles = vl
+    .markRect()
+    .data(simLlhdCsv)
+    .encode(
+        vl.x().fieldO("alpha").title("Alpha"),
+        vl.y().fieldO("beta").scale({
+            "reverse": true
+        }).title("Beta"),
+        vl.color().fieldQ("llhd").scale({
+            "range": ["#416D9D", "#DEAC58"]
+        }).legend({
+            "title": "Log-likelihood"
+        })
+    );
+
+const paramsPoint = vl
+    .markCircle()
+    .data({
+        "values": [ {
+            "alpha": "07",
+            "beta": "24"
+        }, {
+            "alpha": "08",
+            "beta": "20"
+        }]
+    })
+    .encode(
+        vl.x().fieldO("alpha"),
+        vl.y().fieldO("beta"),
+        vl.size({
+            "value": 100
+        })
+    );
+
+vegaEmbed("#simulation-llhd-heatmap",
+          vl
+          .layer(llhdRectangles, paramsPoint)
+          .width(700)
+          .toJSON());
+#+end_src
+
+*** Likelihood ratio statistic
+
+The null hypothesis is that there is no effect of size on the lag which
+corresponds to parameterisations where \(\beta = 0\). Since these are nested
+models we can use the likelihood ratio statistic. To test this hypothesis. The
+null model has a single parameter \(\alpha\) and the altertivative model has two
+\((\alpha,\beta)\), hence the likelihood ratio statistic has a chi-squared
+distribution with a single degree of freedom. We can numerically estiamte the
+MLE and run the calculation for the /p/-value of the null.
+
+=llhd-ratio-statistic=
+#+name: llhd-ratio-statistic
+#+begin_src R :tangle simulation-study-2.R
+  null_obj <- function(p) { - model_2_llhd(c(exp(p), 0)) }
+  null_est <- nlm(f = null_obj, p = rnorm(1))
+  if (null_est$code == 1) {
+    null_llhd <- - null_est$minimum
+  } else {
+    stop("Optimisation non-unit code.")
+  }
+
+  altr_obj <- function(p) { - model_2_llhd(exp(p)) }
+  altr_est <- nlm(f = altr_obj, p = rnorm(2))
+  if (altr_est$code == 1) {
+    altr_llhd <- - altr_est$minimum
+  } else {
+    stop("Optimisation non-unit code.")
+  }
+
+
+  llhd_ratio_stat <- 2 * (altr_llhd - null_llhd)
+  p_val <- pchisq(q = llhd_ratio_stat,
+                  df = 1, lower.tail = FALSE)
+
+  cat("The null LLHD is ", null_llhd, " at ", exp(null_est$estimate), "\n",
+      "The alternative LLHD is ", altr_llhd, " at ", exp(altr_est$estimate), "\n",
+      "The likelihood ratio statistic is ", llhd_ratio_stat, "with 1 degree of freedom\n",
+      "the p-value is ", p_val, "\n")
+#+end_src
+
+Which when run prints out the following...
+
+#+begin_src 
+The null LLHD is  -4204.266  at  11.65166 
+ The alternative LLHD is  -4184.053  at  7.164843 24.13244 
+ The likelihood ratio statistic is  40.42582 with 1 degree of freedom
+ the p-value is  2.042247e-10 
+#+end_src
+
+** Estimating the lag distribution III (thresholded MCC tree)
+
+This section looks at estimating the lag model from the MCC tree data which has
+been tresholded at a 0.5 level.
+
+#+begin_src R :tangle lag-estimation.R :exports none
+library(dplyr)
+library(magrittr)
+library(purrr)
+library(reshape2)
+#+end_src
+
+The implementation of the likelihood above assumed that the dates where encoded
+as integers, so we define a helper function to convert the dates to integers
+describing the day of the year, although we have to be careful to check that all
+the relevant dates fall in the year 2020 unless we want to deal with modular
+arithmetic. *Note* this function is vectorised so you can apply it to a vector
+of date objects.
+
+=date-as-day-of-year-function=
+#+name: date-as-day-of-year-function
+#+begin_src R
+date_as_day_of_year <- function(date_objs) {
+  as.integer(format.Date(date_objs, "%j"))
+}
+#+end_src
+
+We read in the EII data and extend it to capture the whole range of TMRCA dates
+setting setting the introductions numbers to 0 on days far enough in the future
+that interventions would have made the chance of additional introductions
+negligable.
+
+=eii-setup-1=
+#+NAME: eii-setup-1
+#+begin_src R :tangle lag-estimation.R :noweb no-export 
+<<date-as-day-of-year-function>>
+
+eii_csv <- "results/estimated-introduction-index.csv"
+eii_df <- read.csv(eii_csv,
+                   stringsAsFactors = FALSE) %>%
+    mutate(date = as.Date(date)) %>%
+    group_by(date) %>%
+    summarise(total_intros = sum(num_intros))
+
+tmrca_date_range <- as.Date(c("2020-01-01", "2020-06-30"))
+eii_eps <- data.frame(date = seq(from = tmrca_date_range[1],
+                                 to = tmrca_date_range[2],
+                                 by = 1))
+
+eii_df <- full_join(eii_df, eii_eps, by = "date")
+eii_df[is.na(eii_df$total_intros),]$total_intros <- 0
+#+end_src
+
+We further process the EII data to construct the daily introduction
+probabilities. Then we construct the vectors of data that are expected by the
+LLHD function. The zeros we added before will now need to be handled slightly
+differently (i.e., we use machine precision to replace zero,) to ensure that we
+don't get infinite values causing numerical issues later.
+
+=eii-setup-2=
+#+NAME: eii-setup-2
+#+begin_src R :tangle lag-estimation.R
+intro_dates <- eii_df$date
+intro_date_nums <- date_as_day_of_year(eii_df$date)
+intro_dist <- eii_df$total_intros / sum(eii_df$total_intros)
+
+intro_prob_df <- data.frame(date = intro_dates,
+                            date_num = intro_date_nums,
+                            prob = intro_dist)
+
+daily_intro_log_probs <- log(intro_prob_df$prob)
+.inf_mask <- is.infinite(daily_intro_log_probs)
+daily_intro_log_probs[.inf_mask] <- .Machine$double.min.exp
+#+end_src
+
+The data of the cluster TMRCA values is stored in the file
+=data/phylogenetics_data/2020-09-14/clusters_DTA_MCC_0.5.csv=. This file
+contains only a point estimate of cluster sizes. There are a couple of
+assertions here to ensure that the EII does encompass all of the TMRCA dates.
+
+#+begin_src R :tangle lag-estimation.R
+cluster_df <- read.csv("../../data/epidemiological/clusters_DTA_MCC_0.5.csv",
+                       stringsAsFactors = FALSE) %>%
+  mutate(tmrca_date = as.Date(tmrca_calendar),
+         date_num = date_as_day_of_year(tmrca_date)) %>%
+  select(cluster, seqs, tmrca_date, date_num)
+
+stopifnot(min(eii_df$date) >= as.Date("2020-01-01"))
+stopifnot(min(eii_df$date) <= min(cluster_df$tmrca_date))
+stopifnot(max(eii_df$date) >= max(cluster_df$tmrca_date))
+#+end_src
+
+The vectors =tmrca_dates= and =cluster_sizes= are the actual data we need
+regarding the clusters to specify the likelihood function.
+
+#+begin_src R :tangle lag-estimation.R
+tmrca_dates <- cluster_df$date_num
+cluster_sizes <- cluster_df$seqs
+#+end_src
+
+We then define the same likelihood function as from the previous simulation
+study --- this is done by the NOWEB syntax =<<llhd_factory>>= which pulls in the
+=model_2_llhd_factory= function from above.
+
+#+begin_src R :tangle lag-estimation.R :noweb no-export
+<<llhd_factory>>
+
+model_2_llhd <- model_2_llhd_factory(daily_intro_log_probs,
+                                     tmrca_dates,
+                                     cluster_sizes)
+#+end_src
+
+#+begin_src R :tangle lag-estimation.R :exports none
+a_vals <- seq(from = 0.1, to = 20, length = 20)
+b_vals <- seq(from = 0.1, to = 50, length = 20)
+z_vals <- cross2(a_vals, b_vals) %>%
+  map(compose(model_2_llhd,as_vector)) %>%
+  as_vector
+ab_vals <- cross2(a_vals, b_vals) %>%
+  transpose %>%
+  map(as_vector) %>%
+  set_names(c("a", "b"))
+
+result <- data.frame(alpha = ab_vals$a,
+                     beta = ab_vals$b,
+                     llhd = z_vals)
+
+write.table(result,
+            file = "results/lag-estimation-llhds.csv",
+            quote = FALSE,
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+Then we evaluated the log-likelihood function on a mesh of values of \(\alpha\)
+and \(\beta\) to generate a heatmap of the likelihood surface. As expected,
+there is a tradeoff between \(\alpha\) and \(\beta\) which we had seen in the
+previous heatmap.
+
+#+begin_src javascript :tangle lag-estimation-llhd-heatmap.json :exports none
+{
+    "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+
+    "width": 600,
+    "height": 500,
+
+    "data": {
+        "url": "results/lag-estimation-llhds.csv"
+    },
+
+    "mark": "point", 
+
+    "encoding": {
+        "x": {
+            "field": "alpha",
+            "type": "quantitative",
+            "title": "Alpha",
+            "scale": {
+                "zero": false
+            },
+            "axis": {
+                "grid": false,
+                "offset": 20
+            }
+        },
+        "y": {
+            "field": "beta",
+            "type": "quantitative",
+            "title": "Beta",
+            "scale": {
+                "zero": false
+            },
+            "axis": {
+                "grid": false,
+                "offset": 20
+            }
+        },
+        "size": {
+            "field": "llhd",
+            "type": "quantitative",
+            "title": "Log-likelihood",
+            "scale": {
+                "type": "threshold",
+                "domain": [-5200, -5000, -4800],
+                "range": [5,25,125,625]
+            }
+        },
+        "color": {
+            "field": "llhd",
+            "type": "quantitative",
+            "title": "Log-likelihood",
+            "scale": {"range": ["green", "yellow", "orange", "red"]}
+        }
+    },
+
+    "view": {"stroke": null}
+}
+#+end_src 
+
+#+begin_export html
+<div id="lag-llhd-heatmap"></div>
+
+<script type="text/javascript">
+var lagLlhdHeatmap = "http://localhost:8000/lag-estimation-llhd-heatmap.json";
+vegaEmbed('#lag-llhd-heatmap', lagLlhdHeatmap).then(function(result) {
+}).catch(console.error);
+</script>
+#+end_export 
+
+We can then use the same snippets from above to estimate the MLE and to perform
+the LRT for \(\beta = 0\).
+
+#+begin_src R :tangle lag-estimation.R :noweb no-export
+<<numeric-mle>>
+
+write.table(x = numeric_mle,
+            file = "results/lag-estimate-mle-estimates.csv",
+            quote = FALSE,
+            sep = ",",
+            row.names = FALSE)
+
+sink(file = "results/llhd-ratio-report-lag-estimate.txt")
+
+<<llhd-ratio-statistic>>
+
+sink()
+#+end_src
+
+The =sink= command pipes the output of the likelihood ratio test to a file that
+can then be included in the output. Based on this we see that there is a
+substantial difference in the likelihood between the two models, but with the
+parameters so close to the edge of the parameter space we might need to be a
+little bit careful not to overinterpret the /p/-value of the results.
+
+#+include: results/llhd-ratio-report-lag-estimate.txt src
+
+Another method would be to use the AIC as a model selection method. Since the
+log-likelihood differs be about \(67\) and there is only a single parameter
+difference, this still gives very good support for the model with \(\beta \neq
+0\).
+
+To check that the optimisation has landed at a sensible place, we can compute
+the log-likelihood profiles about the optima.
+
+#+begin_src R :tangle lag-estimation.R :noweb no-export
+mle_estimate <- exp(altr_est$estimate)
+
+mesh_length <- 50
+
+alpha_mesh <- seq(from = 0, to = mle_estimate[1] * 2, length = mesh_length)
+alpha_profile <- alpha_mesh %>% map(~ model_2_llhd(c(.x, mle_estimate[2]))) %>% as_vector
+
+beta_mesh <- seq(from = 0, to = mle_estimate[2] * 2, length = mesh_length)
+beta_profile <- beta_mesh %>% map(~ model_2_llhd(c(mle_estimate[1], .x))) %>% as_vector
+
+result <- data.frame(param = rep(c("alpha", "beta"), each = mesh_length),
+                     value = c(alpha_mesh, beta_mesh),
+                     llhd = c(alpha_profile, beta_profile))
+
+write.table(result,
+            file = "results/lag-estimate-llhd-profiles.csv",
+            quote = FALSE,
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+To check what the model fit actually looks like, we have the following code
+which estimates the 95% CI for when the introduction may have occurred.
+
+#+begin_src R :tangle lag-estimation.R :noweb no-export
+model_criticism_df <- data.frame(cluster_size = cluster_sizes,
+                                 tmrca_date = tmrca_dates,
+                                 mean_lag_estimate = median(numeric_mle$alpha) + median(numeric_mle$beta) / cluster_sizes)
+sorted_ixs <- order(model_criticism_df$tmrca_date, model_criticism_df$cluster_size)
+model_criticism_df <- model_criticism_df[sorted_ixs,]
+model_criticism_df$ix = 1:nrow(model_criticism_df)
+model_criticism_df$lag_lower_bound <- qgeom(p = 0.025, prob = 1 / (1 + model_criticism_df$mean_lag_estimate))
+model_criticism_df$lag_upper_bound <- qgeom(p = 0.975, prob = 1 / (1 + model_criticism_df$mean_lag_estimate))
+
+
+write.table(x = model_criticism_df,
+            file = "results/lag-estimate-model-fig.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+The second figure shows the TMRCA of each cluster ordered by date with size and
+colour mapping to the size of the cluster, the line segments next to each point
+indicate the 95% CI of the estimate for when that cluster was introduced into
+the UK.
+
+#+begin_export html
+<div id="lag-llhd-profile"></div>
+
+<div id="lag-model-pred"></div>
+
+<script type="text/javascript">
+var lagLlhdProfiles = "http://localhost:8000/lag-estimate-llhd-profiles.json";
+vegaEmbed('#lag-llhd-profile', lagLlhdProfiles).then(function(result) {
+}).catch(console.error);
+
+var lagModelPred = "http://localhost:8000/lag-estimate-model-fig.json";
+vegaEmbed('#lag-model-pred', lagModelPred).then(function(result) {
+}).catch(console.error);
+</script>
+#+end_export 
+
+#+begin_src javascript :tangle lag-estimate-llhd-profiles.json :exports none
+  {
+
+      "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+
+      "width": 600,
+      "height": 500,
+
+      "data": {
+          "url": "results/lag-estimate-llhd-profiles.csv"
+      },
+
+      "hconcat": [
+          {"layer": [
+              {
+                  "transform": [{"filter": "datum.param == 'alpha'"}],
+                  "mark": "line",
+                  "encoding": {
+                      "x": {"field": "value", "type": "quantitative",
+                            "title": "Alpha"},
+                      "y": {"field": "llhd", "type": "quantitative",
+                            "title": "Log-likelihood cross section",
+                            "scale": {
+                                "zero": false
+                            }
+                           }
+                  }
+              },
+              {
+                  "data": {
+                      "values": [
+                          {"value": 0.719}
+                      ]
+                  },
+                  "mark": "rule",
+                  "encoding": {
+                      "x": {
+                          "field": "value",
+                          "type": "quantitative"
+                      },
+                      "color": {
+                          "value": "red"
+                      }
+                  }
+              }
+          ]
+          },
+
+          {"layer": [
+              {
+                  "transform": [{"filter": "datum.param == 'beta'"}],
+                  "mark": "line",
+                  "encoding": {
+                      "x": {"field": "value", "type": "quantitative",
+                            "title": "Beta"},
+                      "y": {"field": "llhd", "type": "quantitative",
+                            "title": "Log-likelihood cross section",
+                            "scale": {
+                                "zero": false
+                            }
+                           }
+                  }
+              },
+              {
+                  "data": {
+                      "values": [
+                          {"value": 28.9}
+                      ]
+                  },
+                  "mark": "rule",
+                  "encoding": {
+                      "x": {
+                          "field": "value",
+                          "type": "quantitative"
+                      },
+                      "color": {
+                          "value": "red"
+                      }
+                  }
+              }
+
+          ]}
+      ]
+
+  }
+#+end_src 
+
+#+begin_src javascript :tangle lag-estimate-model-fig.json :exports none
+{
+    "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+    "data": {
+        "url": "results/lag-estimate-model-fig.csv"
+    },
+    "transform": [
+        {"calculate": "datum.tmrca_date - datum.lag_upper_bound",
+         "as": "lower_intro_est"},
+        {"calculate": "datum.tmrca_date - datum.lag_lower_bound",
+         "as": "upper_intro_est"}
+    ],
+    "encoding": {
+        "y": {
+            "field": "ix",
+            "type": "quantitative",
+            "title": null
+        },
+        "color": {
+            "field": "cluster_size",
+            "type": "quantitative",
+            "title": "Cluster size"
+        }
+    },
+    "layer": [
+        {
+            "mark": "point",
+            "encoding": {
+                "x": {
+                    "field": "tmrca_date",
+                    "type": "quantitative",
+                    "title": "TMRCA day number"
+                },
+                "size": {
+                    "field": "cluster_size",
+                    "type": "quantitative",
+                    "title": "Cluster size"
+                }
+            }
+        },
+        {
+            "mark": "rule",
+            "encoding": {
+                "x": {
+                    "field": "upper_intro_est",
+                    "type": "quantitative"
+                },
+                "x2": {
+                    "field": "lower_intro_est",
+                    "type": "quantitative"
+                },
+                "y2": {
+                    "field": "ix",
+                    "type": "quantitative"
+                }
+
+            }
+        }
+    ],
+    "height": 800,
+    "config": {
+        "axisY": {
+            "labels": false,
+            "ticks": false,
+            "grid": false
+        }
+    }
+}
+#+end_src
+
+A more nuanced way to test the legitemacy of the model is to look at simulated
+TMRCA values under the model fit to see if they obviously different from the
+actual data set. Using the =r_tmrcas= function from before we can generate 19
+replicates of the data under the fitted model. Note that to generate the cluster
+sizes we are just resampling from the distribution.
+
+#+begin_src R :tangle lag-estimation.R :noweb no-export
+  <<r_tmrcas_function>>
+
+  r_size <- function(n) {
+    sample(x = cluster_sizes, size = n, replace = TRUE)
+  }
+
+  mean_from_size_factory <- function(alpha, beta) {
+    function(c_size) {
+      alpha + beta / c_size
+    }
+  }
+
+  mean_from_size <- mean_from_size_factory(median(numeric_mle$alpha), 
+                                           median(numeric_mle$beta))
+
+  replicated_tmrca_sampes <- rerun(.n = 19, 
+                                   r_tmrcas(length(cluster_sizes),
+                                            intro_date_nums,
+                                            intro_dist,
+                                            r_size,
+                                            mean_from_size))
+#+END_SRC
+
+
+#+begin_src R :tangle lag-estimation.R :exports none
+map3 <- function(.x, .y, .z, .f, ...) {
+  stopifnot(class(.x) == "list")
+  stopifnot(class(.y) == "list")
+  stopifnot(class(.z) == "list")
+  n <- length(.x)
+  stopifnot(length(.y) == n)
+  stopifnot(length(.z) == n)
+
+  lapply(1:n, function(ix) .f(.x[[ix]],
+                              .y[[ix]],
+                              .z[[ix]]))
+}
+#+END_SRC
+
+The next step is to generate the figure of the TMRCAs to see how they compare to
+the actual values, any discrepencies are an indication of a deficiency of the
+model. There is a slight difference, but it is not a huge difference and this
+could be an artifact of the binning used.
+
+#+begin_src R :tangle lag-estimation.R :noweb no-export
+  foo <- c(list(tmrca_dates), replicated_tmrca_sampes)
+  bar <- as.list(c("truth", rep("simulation", 19)))
+  baz <- as.list(1:20)
+
+  plot_df <- map3(foo,
+                  bar,
+                  baz,
+                  function(x,y,z) data.frame(tmrca = x,
+                                             model = y,
+                                             id = z)) %>% 
+    bind_rows
+
+  write.table(x = plot_df,
+              file = "results/lag-estimation-tmrca-replicates.csv",
+              sep = ",",
+              row.names = FALSE)
+#+END_SRC
+
+#+begin_export html
+<div id="lag-tmrca-replicates"></div>
+
+
+<script type="text/javascript">
+var lagTMRCAReplicates = "http://localhost:8000/lag-estimate-tmrca-replicates.json";
+vegaEmbed('#lag-tmrca-replicates', lagTMRCAReplicates).then(function(result) {
+}).catch(console.error);
+
+</script>
+#+end_export 
+
+#+begin_src javascript :tangle lag-estimate-tmrca-replicates.json :exports none
+{
+    "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+    "data": {
+        "url": "results/lag-estimation-tmrca-replicates.csv"
+    },
+    "facet": {"field": "id"},
+    "spec": {
+        "height": 100,
+        "width": 100,
+        "mark": "bar",
+        "encoding": {
+            "x": {
+                "bin": {"step": 10},
+                "field": "tmrca"
+            },
+            "y": {
+                "aggregate": "count"
+            },
+            "color": {
+                "field": "model",
+                "type": "ordinal"
+            }
+        }
+    },
+    "columns": 5
+}
+#+end_src
+
+** Estimating the lag distribution IV (simulation re-estimation)
+
+Now that we have an estimate of the parameters we can performa a simulation
+re-estimation study to obtain a CI and get a better understanding of the lag
+model. The script that will contain this analysis is =simulation-study-3.R=.
+Most of the necessary code can be re-used from previous parts of this document.
+
+#+BEGIN_SRC R :tangle simulation-study-3.R :noweb no-export
+library(dplyr)
+library(purrr)
+library(magrittr)
+library(ggplot2)
+
+<<llhd_factory>>
+
+<<r_tmrcas_function>>
+
+<<eii-setup-1>>
+
+<<eii-setup-2>>
+#+END_SRC
+
+However, we do need a way to select random cluster sizes. Rather than
+approximating the distribution, we will just re-sample the existing cluster
+sizes. The =r_cluster_sizes= function takes no arguments and returns a vector of
+cluster sizes.
+
+#+BEGIN_SRC R :tangle simulation-study-3.R :noweb no-export
+r_cluster_sizes_factory <- function(cluster_sizes) {
+  num_clusters <- length(cluster_sizes)
+  function() {
+  sample(cluster_sizes,
+         size = num_clusters,
+         replace = TRUE)
+  }
+}
+
+data_file <- "../../data/epidemiological/clusters_DTA_MCC_0.5.csv"
+
+cluster_df <- read.csv(data_file,
+                      stringsAsFactors = FALSE) %>%
+  mutate(tmrca_date = as.Date(tmrca_calendar),
+         date_num = date_as_day_of_year(tmrca_date))
+
+r_cluster_sizes <- cluster_df %>%
+  use_series("seqs") %>%
+  r_cluster_sizes_factory
+#+END_SRC
+
+The =mean_from_size_factory= is there as a convenient way for us to generate the
+expected lag for each of the simulated data sets. We can generate the actual
+=mean_from_size= function by plugging in our previous estimate.
+
+#+BEGIN_SRC R :tangle simulation-study-3.R :noweb no-export
+mean_from_size_factory <- function(alpha, beta) {
+  function(c_size) {
+    alpha + beta / c_size
+  }
+}
+
+mean_from_size <- mean_from_size_factory(0.7189865, 28.91369)
+#+END_SRC
+
+This provides us with all the components to generate multiple random data sets,
+construct their likelihood functions so we just need a function to numerically
+approximate the MLE and we will have all the components for the simulation
+re-estimation study. The =random_reestimate= function generates a random data
+set and then attempts to compute the MLE.
+
+#+BEGIN_SRC R :tangle simulation-study-3.R :noweb no-export
+estimate_as_df <- function(est) {
+  data.frame(alpha = exp(est$estimate[1]),
+             beta = exp(est$estimate[2]),
+             exit_code = est$code)
+}
+
+random_reestimate <- function() {
+  foo_n <- nrow(cluster_df)
+
+  valid_sim <- FALSE
+  loop_count <- 0
+  while (not(valid_sim) && loop_count < 20) {
+    foo_sizes <- r_cluster_sizes()
+    foo_tmrca_dates <- r_tmrcas(foo_n,
+                                intro_dates,
+                                intro_dist,
+                                function(dummy) {foo_sizes},
+                                mean_from_size) %>%
+      date_as_day_of_year
+    if (max(foo_tmrca_dates) <= length(daily_intro_log_probs)) {
+      valid_sim <- TRUE
+    } else {
+      loop_count <- loop_count + 1
+      warning("failed simulation...")
+    }
+  }
+
+  if (valid_sim) {
+    foo_llhd <- model_2_llhd_factory(daily_intro_log_probs,
+                                     foo_tmrca_dates,
+                                     foo_sizes)
+
+    foo_obj <- function(p) { - foo_llhd(exp(p)) }
+    foo_est <- nlm(f = foo_obj, p = rnorm(2))
+    estimate_as_df(foo_est)
+  } else {
+    data.frame(alpha = NA, beta = NA, exit_code = 5)
+  }
+}
+#+END_SRC
+
+Then we just need to re-evaluate this expression and write the results to file.
+The exit code of the optimisation can be mapped to the colour of points to make
+sure no bad results slipped in.
+
+#+BEGIN_SRC R :tangle simulation-study-3.R
+num_replicates <- 100
+plot_df <- rerun(.n = num_replicates, random_reestimate()) %>%
+  bind_rows
+
+write.table(x = plot_df,
+            file = "results/sim-study-3-reestimates.csv",
+            sep = ",",
+            row.names = FALSE)
+#+END_SRC
+
+#+begin_export html
+<div id="sim-study-3-reestimates"></div>
+
+<script type="text/javascript">
+var simStudy3Reestimates = "http://localhost:8000/sim-study-3-reestimates.json";
+vegaEmbed('#sim-study-3-reestimates', simStudy3Reestimates).then(function(result) {
+}).catch(console.error);
+</script>
+#+end_export 
+
+#+begin_src javascript :tangle sim-study-3-reestimates.json :exports none
+{
+    "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+    "data": {
+        "url": "results/sim-study-3-reestimates.csv"
+    },
+    "mark": "point",
+    "encoding": {
+        "x": {
+            "field": "alpha",
+            "type": "quantitative"
+        },
+        "y": {
+            "field": "beta",
+            "type": "quantitative",
+            "scale": {"zero": false}
+        },
+        "color": {
+            "field": "exit_code",
+            "type": "nominal"
+        }
+    },
+    "config": {"legend": {"disable": true}}
+}
+#+end_src
+
+** Estimating the lag distribution V (variable threshold MCC tree)
+
+There is uncertainty in the estimated TMRCA dates and cluster sizes. The file
+=data/phylogenetics_data/2020-09-14/clusters_DTA_MCC.csv= contains estimates
+obtained by altering a threshold parameter in the MCC tree. To understand how
+the uncertainty propagates we want to estimate \(\alpha\) and \(\beta\) for each
+of these estimates. The script that will contain this analysis is
+=lag-estimation-2.R=, most of required code can be reused from the previous
+analysis.
+
+#+begin_src R :tangle lag-estimation-2.R :exports none
+library(dplyr)
+library(magrittr)
+library(purrr)
+library(reshape2)
+#+end_src
+
+=eii-and-llhd-setup=
+#+name: eii-and-llhd-setup
+#+begin_src R :tangle lag-estimation-2.R :noweb no-export
+<<eii-setup-1>>
+
+<<eii-setup-2>>
+
+<<llhd_factory>>
+#+end_src
+
+The schema of the data is the same in =clusters_DTA_MCC_0.5.csv= but now we also
+select for the =cutoff= variable to indicate which threshold was used for those
+cluster sizes and TMRCAs.
+
+=read-in-all-mcc-cluster-data=
+#+name: read-in-all-mcc-cluster-data
+#+begin_src R
+all_clusters_df <- read.csv("../../data/epidemiological/clusters_DTA_MCC.csv",
+                            stringsAsFactors = FALSE) %>%
+  mutate(tmrca_date = as.Date(tmrca_calendar),
+         date_num = date_as_day_of_year(tmrca_date),
+         cutoff = as.factor(cutoff)) %>%
+  select(cluster, seqs, tmrca_date, date_num, cutoff)
+#+end_src
+
+To get the LLHD function for each cutoff value, we need to extract the relevant
+cluster size data and give it to =model_2_llhd_factory= along with the daily
+introduction probabilities. The following function does this and wraps up the
+result with the cutoff value of the data used. The assertions have been
+duplicated from previous source blocks.
+
+=llhd-factory-applier-defn=
+#+name: llhd-factory-applier-defn
+#+begin_src R :tangle lag-estimation-2.R 
+llhd_factory_applier <- function(cutoff_factor, all_clusters_df,
+                                 daily_intro_log_probs, eii_df) {
+  cluster_df <- filter(.data = all_clusters_df,
+                       cutoff == cutoff_factor)
+
+  stopifnot(nrow(cluster_df) > 0)
+  stopifnot(min(eii_df$date) >= as.Date("2020-01-01"))
+  stopifnot(min(eii_df$date) <= min(cluster_df$tmrca_date))
+  stopifnot(max(eii_df$date) >= max(cluster_df$tmrca_date))
+
+  list(llhd_func = model_2_llhd_factory(daily_intro_log_probs,
+                                        cluster_df$date_num,
+                                        cluster_df$seqs),
+       cutoff = cutoff_factor)
+}
+#+end_src
+
+To actually estimate the MLE for these LLHD functions we re-use some of the code
+from =<<numeric-mle>>=, throwing a warning if the numeric optimisation failed
+(which may have occurred if the exit code exceeds 2). We record the resuls along
+with the exit code for post processing. Note that this uses a transform on the
+parameter space to make things easier for the optimisation algorithm and it
+starts with a random initial condition.
+
+=estimate-mle-defn=
+#+name: estimate-mle-defn
+#+begin_src R :tangle lag-estimation-2.R 
+estimated_mle <- function(llhd_obj) {
+  stopifnot(setequal(names(llhd_obj),
+                     c("llhd_func", "cutoff")))
+
+  p0 <- rnorm(n = 2)
+
+  .f <- function(p) {
+    - llhd_obj$llhd_func(exp(p))
+  }
+
+  est <- nlm(f = .f, p = p0)
+
+  result <- est$estimate %>%
+    exp %>%
+    set_names(c("alpha", "beta")) %>%
+    as.list
+  result$cutoff <- llhd_obj$cutoff
+  result$llhd <- - est$minimum
+
+  if (est$code > 2) {
+    warning("Inference failed for cutoff: ",
+            result$cutoff)
+  }
+
+  result$exit_code <- est$code
+  return(result)
+}
+#+end_src
+
+Finally, we map these functions over the cluster data for all of the cutoff
+thresholds and save the resulting MLE estimates in
+=cutoff-varying-lag-estimates.csv=.
+
+#+begin_src R :tangle lag-estimation-2.R :noweb no-export
+<<read-in-all-mcc-cluster-data>>
+
+pipeline <- function(cutoff_factor) {
+  llhd_factory_applier(cutoff_factor, all_clusters_df,
+                       daily_intro_log_probs, eii_df) %>%
+    estimated_mle %>%
+    as.data.frame
+}
+
+mle_df <- map(unique(all_clusters_df$cutoff), pipeline) %>%
+  bind_rows %>%
+  mutate(cutoff = as.numeric(as.character(cutoff)))
+
+write.table(x = mle_df,
+            file = "results/cutoff-varying-lag-estimates.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+#+begin_export html
+<div id="cutoff-varying-lag-estimates"></div>
+
+<script type="text/javascript">
+var cutoffVaryingLagEstimates = "http://localhost:8000/cutoff-varying-lag-estimates.json";
+vegaEmbed('#cutoff-varying-lag-estimates', cutoffVaryingLagEstimates).then(function(result) {
+}).catch(console.error);
+</script>
+#+end_export 
+
+#+begin_src javascript :tangle cutoff-varying-lag-estimates.json :exports none
+{
+    "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+    "height": 300,
+    "width": 300,
+    "data": {
+        "url": "results/cutoff-varying-lag-estimates.csv"
+    },
+    "mark": {
+        "type": "point",
+        "size": 60,
+        "filled": true,
+        "stroke": "black",
+        "strokeWidth": 0.5
+    },
+    "encoding": {
+        "x": {
+            "field": "beta",
+            "type": "quantitative",
+            "title": "Beta",
+            "scale": {"zero": false}
+        },
+        "y": {
+            "field": "alpha",
+            "type": "quantitative",
+            "title": "Alpha",
+            "scale": {"zero": false}
+        },
+        "color": {
+            "field": "cutoff",
+            "type": "quantitative",
+            "title": ["MCC cutoff","threshold"],
+            "scale": {"range": "diverging"}
+        },
+        "shape": {
+            "field": "exit_code",
+            "type": "ordinal",
+            "title": ["Optimisation","exit code"]
+        }
+    }
+}
+#+end_src 
+
+** Estimating the lag distribution VI (posterior tree uncertainty)
+
+Another way to consider the uncertainty in the TMRCA estimates is to consider
+multiple tree samples from the posterior. The file
+=data/phylogenetics_data/2020-09-14/clusters_DTA.csv= describes the TMRCA data
+under a set of posterior trees. The analysis is the same as above, but now
+instead of using =cutoff= as the variable we use =tree= which describes which
+posterior tree the data comes from. The script that will contain this analysis
+is =lag-estimation-3.R=
+
+#+begin_src R :tangle lag-estimation-3.R :exports none
+library(dplyr)
+library(magrittr)
+library(purrr)
+library(reshape2)
+#+end_src
+
+#+begin_src R :tangle lag-estimation-3.R :noweb no-export
+<<eii-and-llhd-setup>>
+
+<<llhd-factory-applier-defn>>
+
+<<estimate-mle-defn>>
+#+end_src
+
+To use the functions from before we can just rename =tree= to =cutoff= and
+change it back at the end before saving the results. This allows us to reuse the
+code from above without needing to change the internals. The results are written
+to the file =tree-varying-lag-estimates.csv=.
+
+#+begin_src R :tangle lag-estimation-3.R :noweb no-export
+all_clusters_df <- read.csv("../../data/epidemiological/clusters_DTA.csv",
+                            stringsAsFactors = FALSE) %>%
+  mutate(tmrca_date = as.Date(tmrca_calendar),
+         date_num = date_as_day_of_year(tmrca_date),
+         cutoff = as.factor(tree)) %>%
+  select(cluster, seqs, tmrca_date, date_num, cutoff)
+
+pipeline <- function(cutoff_factor) {
+  llhd_factory_applier(cutoff_factor, all_clusters_df,
+                       daily_intro_log_probs, eii_df) %>%
+    estimated_mle %>%
+    as.data.frame
+}
+
+<<run-parallel-pipeline>>
+
+write.table(x = mle_df,
+            file = "results/tree-varying-lag-estimates.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+Since there are substantially larger number of trees than there were cutoffs we
+will run the pipeline in parallel.
+
+=run-parallel-pipeline=
+#+name: run-parallel-pipeline
+#+begin_src R
+library(future)
+plan(multiprocess)
+
+mle_df <- furrr::future_map(unique(all_clusters_df$cutoff), pipeline) %>%
+  bind_rows %>%
+  rename(tree = cutoff) %>%
+  mutate(tree = as.numeric(as.character(tree)))
+#+end_src
+
+#+begin_export html
+<div id="tree-varying-lag-estimates"></div>
+
+<script type="text/javascript">
+var treeVaryingLagEstimates = "http://localhost:8000/tree-varying-lag-estimates.json";
+vegaEmbed('#tree-varying-lag-estimates', treeVaryingLagEstimates).then(function(result) {
+}).catch(console.error);
+</script>
+#+end_export 
+
+#+begin_src javascript :tangle tree-varying-lag-estimates.json :exports none
+{
+    "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+    "height": 300,
+    "width": 300,
+    "data": {
+        "url": "results/tree-varying-lag-estimates.csv"
+    },
+    "mark": {
+        "type": "point",
+        "size": 60,
+        "filled": true,
+        "stroke": "black",
+        "strokeWidth": 0.5
+    },
+    "selection": {
+        "grid": {
+            "type": "interval", "bind": "scales"
+        }
+    },
+    "encoding": {
+        "x": {
+            "field": "beta",
+            "type": "quantitative",
+            "title": "Beta",
+            "scale": {"zero": false}
+        },
+        "y": {
+            "field": "alpha",
+            "type": "quantitative",
+            "title": "Alpha",
+            "scale": {"zero": false}
+        },
+        "color": {
+            "field": "exit_code",
+            "type": "ordinal",
+            "title": ["Optimisation","exit code"],
+            "scale": {"range": "diverging"}
+        }
+    }
+}
+#+end_src 
+** Extreme poverty adjustment
+
+*** Estimating the proportion of potential seeders 
+
+This choropleth shows the World Bank data that informs the majority of the 
+poverty estimates
+
+#+begin_export html
+<iframe src="https://ourworldindata.org/grapher/share-of-the-population-living-in-extreme-poverty?year=latest" loading="lazy" style="width: 100%; height: 600px; border: 0px none;"></iframe>
+#+end_export
+
+We are accounting for poverty as a proxy for access to healthcare and testing to
+correct for the bias that countries with greater access to healthcare are likely
+to ascertain more of the COVID-19 deaths than countries with lower access. To do
+this, we replicate most of the calculations previously used to estimate the 
+proportion of seeders, but now we adjust the population size to just consist of 
+those not living in poverty.
+
+#+begin_src R :tangle estimate-potential-seeders-poverty-adjusted.R :noweb no-export
+
+<<age-of-infection-matrix-defn>>
+
+<<padded-potential-seeders-defn>>
+
+<<seeder-proportion-defn>>
+
+library(magrittr)
+
+<<jhu-un-location-unification>>
+
+<<model-parameters>>
+#+end_src
+
+Once we get to the population size component, we need to adjust it by the 
+proportion living in extreme poverty.
+
+#+begin_src R :tangle estimate-potential-seeders-poverty-adjusted.R :noweb no-export
+get_primary_sources <- function() {
+
+  <<primary-source-locations-defn>>
+
+  return(primary_source_locations)
+}
+
+primary_source_locations <- get_primary_sources()
+
+poverty_df <- read.csv("results/clean-worldbankpoverty.csv")
+poverty_map <- as.list(poverty_df$latest_poverty_percentage)
+names(poverty_map) <- poverty_df$location
+
+location_seeder_props_adjusted <- function(location_str) {
+    deaths_df <- filter(jhu_deaths, location == location_str) %>%
+        select(date,deaths)
+
+    if (is.element(location_str, un_populations$location)) {
+      non_poverty_prop <- if (is.element(location_str, names(poverty_map))) {
+                              1 - 0.01 * poverty_map[[location_str]]
+                          } else {
+                              1 - 0.01 * poverty_map[["other"]]
+                          }
+      pop_size <- 1e3 *
+        un_populations[un_populations$location == location_str, "population_size"] *
+        non_poverty_prop
+    } else {
+        stop("Cannot find a population size for ", location_str)
+    }
+
+    if (length(pop_size) == 0) {
+      stop("Bad population size encountered for ", location_str)
+    }
+
+    seeder_props <- seeder_proportion(deaths_df,
+                                      pop_size,
+                                      days_latent,
+                                      days_incubating,
+                                      days_infectious,
+                                      prop_asymptomatic,
+                                      days_infection_to_death,
+                                      infection_fatality_ratio)
+
+    seeder_props$location <- location_str
+    return(seeder_props)
+}
+
+
+result <- map(.x = unique(jhu_deaths$location),
+              .f = location_seeder_props_adjusted) %>%
+  bind_rows %>%
+  filter(date < "2020-07-01")
+
+stopifnot(!any(is.na(result$seeder_proportion)))
+
+write.table(x = result,
+            file = "results/estimated-proportion-seeders-poverty-adjusted.csv",
+            sep = ",",
+            row.names = FALSE)
+#+end_src
+
+Then we to re-calculate the EII with the adjusted seeding proportions.
+
+*** Estimating the EII 
+
+To estimate the EII under the adjusted population sizes we just copy the file 
+=estimate-introduction-index.R= and replace the input file 
+=estimated-proportion-seeders.csv= to 
+=estimated-proportion-seeders-poverty-adjusted.csv= and the output file 
+=estimated-introduction-index.csv= to 
+=estimated-introduction-index-poverty-adjusted.csv= the new script for this is 
+called =estimate-introduction-index-poverty-adjusted.R=
+
+The changes to the EII are shown in the following figure
+
+#+begin_export html 
+<div class="figure grid-figure">
+  <img width=700px src="results/poverty-adjustment-sizes.png">
+</div>
+#+end_export
+
+#+BEGIN_SRC R :tangle poverty-adjustment-size.R :exports none
+library(dplyr)
+library(purrr)
+library(magrittr)
+library(ggplot2)
+
+unadjusted_val_df <- read.csv("results/estimated-introduction-index.csv") %>%
+  group_by(primary_location) %>%
+  summarise(total_intros = sum(num_intros))
+
+adjusted_val_df <- read.csv("results/estimated-introduction-index-poverty-adjusted.csv") %>%
+  group_by(primary_location)%>%
+  summarise(total_intros = sum(num_intros)) %>%
+  rename(total_intros_adjusted = total_intros)
+
+
+poverty_df <- read.csv("results/clean-worldbankpoverty.csv") %>%
+  rename(primary_location = location) %>%
+  mutate(poverty_string = ifelse(latest_poverty_percentage > 10,
+                                 sprintf("%.1f %%", latest_poverty_percentage),
+                                 ""))
+
+plot_df <- full_join(unadjusted_val_df, adjusted_val_df, by = "primary_location")
+plot_df <- full_join(plot_df, poverty_df, by = "primary_location")
+
+g <- ggplot(data = plot_df,
+            mapping = aes(x = primary_location,
+                          y = total_intros_adjusted - total_intros,
+                          colour = round(latest_poverty_percentage))) +
+  geom_segment(mapping = aes(xend = primary_location,
+                             yend = 0)) +
+  geom_point() +
+  geom_text(mapping = aes(label = poverty_string),
+            vjust = -2,
+            angle = 0) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = -80)) +
+  labs(x = NULL,
+       y = "Adjustment size",
+       colour = "Percentage in\nextreme poverty")
+
+
+ggsave("results/poverty-adjustment-sizes.png", g, 
+       height = 20, width = 40, units = "cm")
+#+END_SRC
+
+** Sensitivity to asymptomatic ratio
+
+There are very different estimates of the asymptomatic ratio in the literature.
+Since there is substantial uncertainty surrounding this parameter we performed a
+sensitivity analysis to determine how it influences our results. Here are some
+of the estimates, clicking on the point estimate will open the corresponding
+article page.
+
+#+begin_export html 
+<div id="asymptomatic-ratio-estimates"></div>
+
+<script type="text/javascript">
+var spec = "http://localhost:8000/parameter-vis-asymptomatic-ratio.json";
+vegaEmbed('#asymptomatic-ratio-estimates', spec).then(function(result) {
+}).catch(console.error);
+</script>
+#+end_export
+
+#+begin_src js :tangle parameter-vis-asymptomatic-ratio.json :exports none
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v4.json",
+  "width": 400,
+  "height": 100,
+    "data": {
+        "url": "parameter-estimate-asymptomatic-ratio.json"
+    },
+    "encoding": {
+        "y": {
+            "field": "title",
+            "type": "ordinal",
+            "title": null
+        },
+        "color": {
+            "value": "black"
+        },
+        "tooltip": [
+            {
+                "field": "pointEstimate"
+            },
+            {
+                "field": "title"
+            }
+        ],
+        "href": {
+            "field": "doi",
+            "type": "nominal"
+        }
+    },
+    "layer": [
+        {
+            "mark": {
+                "type": "point",
+                "filled": true,
+                "shape": "square",
+                "size": 70
+            },
+            "encoding": {
+                "x": {
+                    "field": "pointEstimate",
+                    "type": "quantitative",
+                    "scale": {"domain": [0,100]},
+                    "title": "Asymptomatic ratio (as a percentage)"
+                }
+            }
+        } ,
+        {
+            "mark": {
+                "type": "rule"
+            },
+            "encoding": {
+                "x": {
+                    "field": "lowerBound",
+                    "type": "quantitative"
+                },
+                "x2": {
+                    "field": "upperBound",
+                    "type": "quantitative"
+                }
+          }
+      }
+  ]
+}
+#+end_src
+
+#+begin_src js :tangle parameter-estimate-asymptomatic-ratio.json :exports none
+  [
+    {
+      "pointEstimate": 30.8,
+      "upperBound": 53.8,
+      "lowerBound": 7.7,
+      "doi": "https://dx.doi.org/10.1016%2Fj.ijid.2020.03.020",
+      "title": "Estimation of the asymptomatic ratio of novel coronavirus infections (COVID-19)"
+    },
+    {
+      "pointEstimate": 17.9,
+      "upperBound": 20.2,
+      "lowerBound": 15.5,
+      "doi": "https://doi.org/10.2807/1560-7917.ES.2020.25.10.2000180",
+      "title": "Estimating the asymptomatic proportion of coronavirus disease 2019 (COVID-19) cases on board the Diamond Princess cruise ship, Yokohama, Japan, 2020"
+    },
+    {
+      "pointEstimate": null,
+      "upperBound": 75,
+      "lowerBound": 50,
+      "doi": "https://doi.org/10.1136/bmj.m1165",
+      "title": "Covid-19: identifying and isolating asymptomatic people helped eliminate virus in Italian village"
+    },
+    {
+      "pointEstimate": 78,
+      "upperBound": null,
+      "lowerBound": null,
+      "doi": "https://doi.org/10.1136/bmj.m1375",
+      "title": "Covid-19: four fifths of cases are asymptomatic, China figures indicate"
+    },
+    {
+      "pointEstimate": 42.5,
+      "upperBound": 54.6,
+      "lowerBound": 31.5,
+      "doi": "https://doi.org/10.1038/s41586-020-2488-1",
+      "title": "Suppression of a SARS-CoV-2 outbreak in the Italian municipality of Vo'"
+    }
+ ]
+#+end_src
+
+We opted for \(31\%\) in the main results, but as a sensitivity analysis we
+re-ran the calculations with both \(18\%\) and \(78\%\) to see how it would
+influence the results. The simplest way to do this was just to change the
+parameter value and then re-run all of the code, copying the file
+=estimated-introduction-index.csv= each time as
+=estimated-introduction-index-<A>.csv= for =<A>= as =18=, =31= and =78=.
+
+The following figure shows the changes in the total EII as the asymptomatic
+ratio is varied from \(18\%\) to \(78\%\) with the solid line indicating the
+values at \(31\%\).
+
+#+begin_export html 
+<div class="figure grid-figure">
+  <img width=700px src="results/asymptomatic-uncertainty.png">
+</div>
+#+end_export
+
+#+BEGIN_SRC R :tangle asymptomatic-adjustment-size.R :exports none
+library(dplyr)
+library(purrr)
+library(magrittr)
+library(ggplot2)
+
+total_intros_18_df <- read.csv("results/estimated-introduction-index-18.csv") %>%
+  mutate(date = as.Date(date)) %>%
+  group_by(date) %>%
+  summarise(total_intros_18 = sum(num_intros))
+
+total_intros_31_df <- read.csv("results/estimated-introduction-index-31.csv") %>%
+  mutate(date = as.Date(date)) %>%
+  group_by(date) %>%
+  summarise(total_intros_31 = sum(num_intros))
+
+total_intros_78_df <- read.csv("results/estimated-introduction-index-78.csv") %>%
+  mutate(date = as.Date(date)) %>%
+  group_by(date) %>%
+  summarise(total_intros_78 = sum(num_intros))
+
+plot_df <- full_join(total_intros_18_df, total_intros_31_df, by = "date")
+plot_df <- full_join(plot_df, total_intros_78_df, by = "date")
+
+g <- ggplot(data = plot_df,
+            mapping = aes(x = date,
+                          ymin = total_intros_18,
+                          y = total_intros_31,
+                          ymax = total_intros_78)) +
+  geom_ribbon(alpha = 0.3) +
+  geom_line() +
+  theme_classic() +
+  theme() +
+  labs(x = NULL,
+       y = "EII")
+
+ggsave("results/asymptomatic-uncertainty.png", g,
+       height = 10, width = 20, units = "cm")
+#+END_SRC
+
+** Using this document and running the analysis
+
+There are a few steps involved in using this document and running the analysis
+which we document here for clarity.
+
+*** Extracting source code and exporting HTML
+
+The source code for the analysis is entirely contained within this document
+(i.e., it is a literate program). To extract that code, run the following
+command (assuming you have =emacs= installed).
+
+#+BEGIN_SRC sh
+emacs --batch -l org --eval '(org-babel-tangle-file "epi-mobility-lag.org")'
+#+END_SRC
+
+To export the HTML version of this document (as =epi-mobility-lag.org=) run the
+following command. Note that the warnings generated are a known issue but do not
+affect the result.
+
+#+BEGIN_SRC sh
+emacs --batch -l org epi-mobility-lag.org --eval '(org-html-export-to-html)' 
+#+END_SRC
+
+*** Download the data 
+
+Some of it is already included in the =raw-data= directory, but there is other
+data that we can download a fresh copy into =raw-data=.
+
+#+begin_src sh 
+wget "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+mv time_series_covid19_deaths_global.csv raw-data/jhu-deaths.csv
+
+wget "https://population.un.org/wpp/Download/Files/1_Indicators%20(Standard)/CSV_FILES/WPP2019_TotalPopulationBySex.csv"
+mv WPP2019_TotalPopulationBySex.csv raw-data/un-population.csv
+#+end_src
+
+*** Run the cleaning scripts
+
+To get the data into a format that is easy to work with, run the
+cleaning scripts. Note that these need to be run in order, and they assume that
+certain files are available from within this repository.
+
+#+begin_src sh :tangle run-cleaning-scripts.sh
+# run-cleaning-scripts.sh
+
+Rscript clean-jhu-deaths.R
+Rscript clean-un-population.R
+Rscript clean-iata.R
+Rscript clean-home-office.R
+Rscript clean-non-air-travel.R
+
+Rscript clean-elvidge-poverty.R
+Rscript clean-owid-poverty.R
+#+end_src
+
+*** Run the estimation scripts
+
+To estimate the epidemic introduction index the following scripts should be run.
+
+#+begin_src sh :tangle run-estimation-scripts.sh
+# run-estimation-scripts.sh
+
+Rscript estimate-arrivals.R
+Rscript estimate-potential-seeders.R
+Rscript estimate-introduction-index.R
+
+Rscript estimate-potential-seeders-poverty-adjusted.R
+Rscript estimate-introduction-index-poverty-adjusted.R
+Rscript poverty-adjustment-size.R
+Rscript asymptomatic-adjustment-size.R
+#+end_src
+
+Note that running both the poverty adjustment sensitivity analysis and the
+asymptomatic ratio sensitivity analysis requires some additional steps, but
+these are documented in the relevant sections.
+
+*** Running the simulations
+
+This produces some output which then will be displayed in the HTML export of
+this document.
+
+#+begin_src sh
+Rscript simulation-study-1.R
+Rscript simulation-study-2.R
+Rscript simulation-study-3.R
+#+end_src
+
+*** Running the lag inference
+
+To run the actual inference on the real data run the following R script on
+freshly tangled scripts. The main results are computed by =lag-estimation.R= but
+there are sensitivity analyses in =lag-estimation-2.R= and =lag-estimation-3.R=
+which are also of interest.
+
+#+begin_src sh 
+Rscript lag-estimation.R
+Rscript lag-estimation-2.R
+Rscript lag-estimation-3.R
+#+end_src
+
+*** Serving the HTML
+
+To serve the HTML exported version of this file run the following command after
+weaving it.
+
+#+begin_src sh 
+python3 -m http.server 8000
+#+end_src

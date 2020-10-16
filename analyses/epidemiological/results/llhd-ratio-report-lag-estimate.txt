@@ -1,0 +1,4 @@
+The null LLHD is  -4813.221  at  8.21118 
+ The alternative LLHD is  -4744.612  at  0.7190474 28.91352 
+ The likelihood ratio statistic is  137.2184 with 1 degree of freedom
+ the p-value is  1.080251e-31 

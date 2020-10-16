@@ -1,0 +1,14 @@
+This data was obtained from Our World in Data which at the following link:
+https://ourworldindata.org/extreme-poverty#the-evolution-of-extreme-poverty-country-by-country
+it was sourced from the World Bank which gives the following as a recommended
+citation.
+
+```
+Recommended Citation: World Development Indicators, The World Bank
+```
+
+The corresponding chart can be embedded with the following element
+
+```
+<iframe src="https://ourworldindata.org/grapher/share-of-the-population-living-in-extreme-poverty?year=latest" loading="lazy" style="width: 100%; height: 600px; border: 0px none;"></iframe>
+```
