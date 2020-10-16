@@ -1,0 +1,37 @@
+[
+   {
+     "pointEstimate": 30.8,
+     "upperBound": 53.8,
+     "lowerBound": 7.7,
+     "doi": "https://dx.doi.org/10.1016%2Fj.ijid.2020.03.020",
+     "title": "Estimation of the asymptomatic ratio of novel coronavirus infections (COVID-19)"
+   },
+   {
+     "pointEstimate": 17.9,
+     "upperBound": 20.2,
+     "lowerBound": 15.5,
+     "doi": "https://doi.org/10.2807/1560-7917.ES.2020.25.10.2000180",
+     "title": "Estimating the asymptomatic proportion of coronavirus disease 2019 (COVID-19) cases on board the Diamond Princess cruise ship, Yokohama, Japan, 2020"
+   },
+   {
+     "pointEstimate": null,
+     "upperBound": 75,
+     "lowerBound": 50,
+     "doi": "https://doi.org/10.1136/bmj.m1165",
+     "title": "Covid-19: identifying and isolating asymptomatic people helped eliminate virus in Italian village"
+   },
+   {
+     "pointEstimate": 78,
+     "upperBound": null,
+     "lowerBound": null,
+     "doi": "https://doi.org/10.1136/bmj.m1375",
+     "title": "Covid-19: four fifths of cases are asymptomatic, China figures indicate"
+   },
+   {
+     "pointEstimate": 42.5,
+     "upperBound": 54.6,
+     "lowerBound": 31.5,
+     "doi": "https://doi.org/10.1038/s41586-020-2488-1",
+     "title": "Suppression of a SARS-CoV-2 outbreak in the Italian municipality of Vo'"
+   }
+]
