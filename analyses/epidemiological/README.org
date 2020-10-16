@@ -2327,10 +2327,12 @@ r_cluster_sizes_factory <- function(cluster_sizes) {
 
 data_file <- "../../data/epidemiological/clusters_DTA_MCC_0.5.csv"
 
-r_cluster_sizes <- read.csv(data_file,
-                            stringsAsFactors = FALSE) %>%
+cluster_df <- read.csv(data_file,
+                      stringsAsFactors = FALSE) %>%
   mutate(tmrca_date = as.Date(tmrca_calendar),
-         date_num = date_as_day_of_year(tmrca_date)) %>%
+         date_num = date_as_day_of_year(tmrca_date))
+
+r_cluster_sizes <- cluster_df %>%
   use_series("seqs") %>%
   r_cluster_sizes_factory
 #+END_SRC
@@ -2363,7 +2365,7 @@ estimate_as_df <- function(est) {
 }
 
 random_reestimate <- function() {
-  foo_n <- length(raw_cluster_sizes)
+  foo_n <- nrow(cluster_df)
 
   valid_sim <- FALSE
   loop_count <- 0
@@ -3168,6 +3170,10 @@ Rscript estimate-introduction-index-poverty-adjusted.R
 Rscript poverty-adjustment-size.R
 Rscript asymptomatic-adjustment-size.R
 #+end_src
+
+Note that running both the poverty adjustment sensitivity analysis and the
+asymptomatic ratio sensitivity analysis requires some additional steps, but
+these are documented in the relevant sections.
 
 *** Running the simulations
 
