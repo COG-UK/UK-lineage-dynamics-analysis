@@ -3111,7 +3111,7 @@ The source code for the analysis is entirely contained within this document
 command (assuming you have =emacs= installed).
 
 #+BEGIN_SRC sh
-emacs --batch -l org --eval '(org-babel-tangle-file "epi-mobility-lag.org")'
+emacs --batch -l org --eval '(org-babel-tangle-file "README.org")'
 #+END_SRC
 
 To export the HTML version of this document (as =epi-mobility-lag.org=) run the
