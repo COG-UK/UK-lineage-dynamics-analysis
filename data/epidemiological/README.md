@@ -6,7 +6,7 @@ Epidemiological input data used in the analyses.
 ## Numbers of reported COVID-19 cases in the UK
 
 - [`data_2020-Aug-31_UKtotal.csv`](data_2020-Aug-31_UKtotal.csv)
-- [`data_2020-Aug-31-UKnations.csv`](data_2020-Aug-31-UKnations.csv)
+- [`data_2020-Aug-31-UKnations.csv`](data_2020-Aug-31_UKnations.csv)
 
 Reported cases in the whole UK and each nation, ordered by specimen date.
 
