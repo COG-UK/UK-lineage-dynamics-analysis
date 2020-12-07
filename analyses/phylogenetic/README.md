@@ -1,9 +1,10 @@
 # Phylogenetic Analysis
 
-
 ## Overview
+This direcotry contains the scripts, XML files and RMarkdown notebooks needed to: 
 
-
+- Estimate time-calibrated trees in BEAST
+- Estimate state transitions between UK and non-UK branches in the trees in BEAST
 
 Some of the scripts may need some adjustment depending on the local setup.
 
@@ -53,12 +54,12 @@ XML files should be run using the developmental [BEAST](https://github.com/beast
 
 Run the RMarkDown notebooks below to extract UK transmission lineages and reproduce figures and tables. 
 
-1. `extractLineages.Rmd`: Extract TMRCAs and other summary statistics of the UK transmission lineages across all posterior trees from the BEAST analyses.
-2. `extractLineagesMCC.Rmd`: Extract TMRCAs and other summary statistics of the UK transmission lineages from the BEAST MCC trees.
-3. `lineageSummary.Rmd`: Plot summary statistics and figures of the UK transmission lineages extracted from the BEAST DTA analyses.
-4. `importationSummary.Rmd`: Plot figures about the dataset, infections in different countries and inbound travellers. Also apply the importation lag model to the UK transmission lineage TMRCAs and plot figures with lineage importations. 
-5. `lineageSimilarity.Rmd`: Compare similarity of lineage assignments across posterior trees and the MCC tree using the Jaccard index. 
-6. `lineageBreakdown.Rmd`: Plot breakdowns of UK transmission lineages over time (using only the assignment on the MCC trees).
+1. [`extractLineages.Rmd`](reports/extractLineages.md): Extract TMRCAs and other summary statistics of the UK transmission lineages across all posterior trees from the BEAST analyses.
+2. [`extractLineagesMCC.Rmd`](reports/extractLineagesMCC.md): Extract TMRCAs and other summary statistics of the UK transmission lineages from the BEAST MCC trees.
+3. [`lineageSummary.Rmd`](reports/lineageSummary.pdf): Plot summary statistics and figures of the UK transmission lineages extracted from the BEAST DTA analyses.
+4. [`importationSummary.Rmd`](reports/importationSummary.pdf): Plot figures about the dataset, infections in different countries and inbound travellers. Also apply the importation lag model to the UK transmission lineage TMRCAs and plot figures with lineage importations. 
+5. [`lineageSimilarity.Rmd`](reports/lineageSimilarity.md): Compare similarity of lineage assignments across posterior trees and the MCC tree using the Jaccard index. 
+6. [`lineageBreakdown.Rmd`](reports/lineageBreakdown.pdf): Plot breakdowns of UK transmission lineages over time (using only the assignment on the MCC trees).
 
 
 ## Output
