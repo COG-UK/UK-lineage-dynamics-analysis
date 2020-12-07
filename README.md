@@ -25,10 +25,9 @@ uk-intros-analyses/
 │   ├── phylogenetic
 │   └── spatial
 ├── data
+│   ├── epidemiological
 │   ├── phylogenetic
-│   ├── spatial
-│   ├── spatial_data
-│   └── xxx.csv
+│   └── spatial
 ├── LICENSE
 └── README.md
 ```
@@ -36,7 +35,7 @@ uk-intros-analyses/
 - **Input data**: All input data that we are able to share publicly are stored in the [`data`](data/) directory.
 - **Analyses:** The [`analyses`](analyses/) directory contains directories containing the details of each
   type of analysis.
-  + **Epidemiological analyses:** The `epidemiological` directory contains a [`README.md`](analyses/epidemiological/README.md) file describing how
+  + **Epidemiological analyses:** The `epidemiological` directory contains a [`README.org`](analyses/epidemiological/README.org) file describing how
     to run the included scripts to carry out the epidemiological analysis. The
     output goes into a `results` directory.
   + **Phylogenetic analyses:**
