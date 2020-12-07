@@ -14,11 +14,11 @@
 - =un-population.csv=
 - =home-office.csv=
 - =extra-uk-arrivals.csv=
-- =clusters_summary_del.csv=
+- =clusters_DTA_MCC_0.5.csv=
+- =clusters_DTA.csv=
 - =IATA_CountryLevel_Dec_May.csv=
 
-Due to ethical and legal restrictions we cannot upload either
-=clusters_summary_del.csv= nor =IATA_CountryLevel_Dec_May.csv=. To download the
+Due to ethical and legal restrictions we cannot upload =IATA_CountryLevel_Dec_May.csv=. To download the
 JHU and UN data we have the following script, =download-data.sh=.
 
 #+begin_src sh :tangle download-data.sh 
