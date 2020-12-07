@@ -2,7 +2,7 @@
 
 ## Overview
 
-This direcotry contains the scripts, XML files and RMarkdown notebooks needed to: 
+This directory contains the scripts, XML files and RMarkdown notebooks needed to: 
 
 - Estimate time-calibrated trees in BEAST
 - Estimate state transitions between UK and non-UK branches in the trees in BEAST (DTA)
@@ -72,7 +72,7 @@ Run the RMarkDown notebooks below to extract UK transmission lineages and reprod
 	- `clusters_DTA.csv`: Summary statistics of UK transmission lineages across all **2000** posterior trees.
 	- `clusterSamples_DTA.csv`: Assignment of UK genomes to transmission lineages across all **2000** posterior trees.
 	- `clusters_DTA_MCC_0.5`: Summary statistics of UK transmission lineages on the MCC trees using a **posterior probability threshold of 0.5**. 
-	- `clusters_DTA_MCC_0.5_shifted`: As above, but including importation lag
+	- `clusters_DTA_MCC_0.5_shifted`: As above, but including importation lag.
 	- `clusterSamples_DTA_MCC_0.5.csv`: Assignment of UK genomes to transmission lineages on the MCC trees using a **posterior probability threshold of 0.5**. 
 - **Figures:** Output figures are stored in [`results/combined_beast_data/figures/`](results/combined_beast_dta/figures/).
 
