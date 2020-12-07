@@ -6,7 +6,7 @@ Phylogenetic input data used in the analyses.
 
 - [metadata.csv](metadata.csv)
 
-Sequence metadata and identifiers for the 50,887 genome sequences used. See Materials and Methods for details.
+Sequence metadata and identifiers for the 50,887 genome sequences used. The sequences themselves can be downloaded from [COG-UK](https://www.cogconsortium.uk/data/) and [GISAID](http://www.gisaid.org). See Materials and Methods for details.
 
 
 ## Maximum-likelihood trees
@@ -17,4 +17,4 @@ Sequence metadata and identifiers for the 50,887 genome sequences used. See Mate
 - [B.1.X.tree](B.1.X.tree)
 - [B.1.1.tree](B.1.1.tree)
 
-Maximum-likelihood phylogenies generated for the 5 subsets of the sequence data constructed in FastTree (with branches shorter than 5e-6 substitutions per site collapsed).
+Maximum-likelihood phylogenies generated for the 5 subsets of the sequence data constructed in FastTree (with branches shorter than 5e-6 substitutions per site collapsed). See Materials and Methods for details.

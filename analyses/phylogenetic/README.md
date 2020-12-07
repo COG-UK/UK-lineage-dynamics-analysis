@@ -1,12 +1,15 @@
 # Phylogenetic Analysis
 
 ## Overview
+
 This direcotry contains the scripts, XML files and RMarkdown notebooks needed to: 
 
 - Estimate time-calibrated trees in BEAST
-- Estimate state transitions between UK and non-UK branches in the trees in BEAST
+- Estimate state transitions between UK and non-UK branches in the trees in BEAST (DTA)
+- Extract UK transmission lineages
+- Create related figures and tables
 
-Some of the scripts may need some adjustment depending on the local setup.
+Minimal results are also included. Some of the scripts may need some adjustment depending on the local setup.
 
 The structure of the phylogenetic analysis directory is shown below:
 
@@ -45,7 +48,7 @@ The phylogenetic trees that are used as data in the 'timetree' analysis can be f
 
 1. **Preliminary analysis:** Run [`preliminary_analysis.xml`](results/xml/preliminary_analysis.xml)
 2. **Time trees:** Run XML files in [`timetrees/`](results/xml/timetrees/)
-3. **Discrete Trait Analyses:** Run XML files in [`dta`](results/xml/dta/)
+3. **DTA:** Run XML files in [`dta`](results/xml/dta/)
 
 XML files should be run using the developmental [BEAST](https://github.com/beast-dev/beast-mcmc) branch `approximateTreeLikelihood` (commit [c8cc55d4](https://github.com/beast-dev/beast-mcmc/tree/c8cc55d4fe9d8c6c802c2cbb71936a2c4ccc381e)). 
 
@@ -64,8 +67,13 @@ Run the RMarkDown notebooks below to extract UK transmission lineages and reprod
 
 ## Output
 
-The extracted UK transmission lineages are stored in [`results/combined_beast_data/`](results/combined_beast_dta/). Only the summary `.csv` files are provided on this repository. 
-
-Output figures are stored in [`results/combined_beast_data/figures/`](results/combined_beast_dta/figures/).
+- **DTA output:** Log files, MCC trees and subsampled posterior tree files **(thinned to only 200 out of 2000 posterior trees)** can be found in [`results/xml/dta/output/`](results/xml/dta/output/).
+- **UK transmission lineages:** The extracted UK transmission lineages can be found in [`results/combined_beast_data/`](results/combined_beast_dta/). Only the summary `.csv` files are provided on this repository. _**NOTE THAT THE ASSIGNMENT OF GENOMES TO TRANSMISSION LINEAGES IS NOT DETERMINISTIC AND VARIES ACROSS THE POSTERIOR SET OF TREES!**_
+	- `clusters_DTA.csv`: Summary statistics of UK transmission lineages across all **2000** posterior trees.
+	- `clusterSamples_DTA.csv`: Assignment of UK genomes to transmission lineages across all **2000** posterior trees.
+	- `clusters_DTA_MCC_0.5`: Summary statistics of UK transmission lineages on the MCC trees using a **posterior probability threshold of 0.5**. 
+	- `clusters_DTA_MCC_0.5_shifted`: As above, but including importation lag
+	- `clusterSamples_DTA_MCC_0.5.csv`: Assignment of UK genomes to transmission lineages on the MCC trees using a **posterior probability threshold of 0.5**. 
+- **Figures:** Output figures are stored in [`results/combined_beast_data/figures/`](results/combined_beast_dta/figures/).
 
 
