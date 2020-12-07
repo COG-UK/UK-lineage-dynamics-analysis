@@ -1,0 +1,1295 @@
+---
+title: "COVID-19 UK introductions"
+subtitle: "Importation summary"
+author: "Louis du Plessis"
+date: '`r format(Sys.time(), "Last modified: %d %b %Y")`'
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    keep_tex: false
+    fig_crop: false
+layout: page
+editor_options: 
+  chunk_output_type: inline
+params: 
+  inputpath       :  "../../../data/phylogenetic/"
+  casefile        : "../../../data/epidemiological/data_2020-Aug-31_UKtotal.csv"
+  infectionfile   : "../../../data/epidemiological/flaxman-results.csv"
+  epimobilitypath : "../../epidemiological/results/"
+  asymptomatic    : 31
+  outputpath      : "../results/combined_beast_dta/"
+  cluster_f       : "DTA"
+  alpha           : 0.7189865
+  beta            : 28.91369
+  startDate       : "2020-01-19"
+  endDate         : "2020-04-30"
+  device          : "pdf"
+  
+---
+
+
+```{r rsetup, include=FALSE}
+  
+    library(lubridate)
+    library(plyr)
+    library(gplots)
+    library(beastio)
+    library(knitr)
+    library(tictoc)
+    source("../scripts/palettes.R")
+    source("../scripts/plotutils.R")
+    source("../scripts/clusterutils.R")
+
+    inputpath    <- params$inputpath
+    casefile     <- params$casefile
+    infectionfile<- params$infectionfile
+    outputpath   <- params$outputpath
+    epipath      <- params$epimobilitypath
+    mobilitypath <- params$epimobilitypath
+    asymptomatic <- params$asymptomatic
+    cluster_f    <- params$cluster_f
+    alpha        <- params$alpha
+    beta         <- params$beta
+    
+    startDate    <- as.Date(params$startDate)
+    endDate      <- as.Date(params$endDate)
+  
+
+    figpath      <- paste0(outputpath, "figures/importation_figures_", params$device, "/")
+    dir.create(figpath, recursive = TRUE, showWarnings = FALSE)
+    
+    cachepath  <- paste0(outputpath, "figures/cache/importationSummary_", params$device, "/")
+
+
+    knitr::opts_chunk$set(tidy=FALSE, cache=FALSE, cache.path = cachepath,
+                          dev=params$device, fig.path=figpath, dpi=300,
+                          message=FALSE, error=TRUE, warning=TRUE, echo=FALSE)
+    
+    plotList     <- c("China",
+                      "Italy",
+                      "Spain", 
+                      "France", 
+                      "Belgium",
+                      "Netherlands",
+                      "Ireland", 
+                      "Switzerland", 
+                      "US")
+
+    travelDates <- list(china    = as.Date("2020-01-28"), 
+                        italy    = as.Date("2020-02-25"), 
+                        lockdown = as.Date("2020-03-23"))
+
+```
+
+\clearpage
+
+# Summary
+This notebook plots figures about the dataset, infections in different countries and inbound travellers. It also applies the importation lag model to the UK transmission lineage TMRCAs and plots figures with lineage importations. 
+
+## Input
+- Metadata table (in `inputpath`).
+- Cluster statistics for MCC trees (in `outputpath`):
+  - `clusters_DTA_MCC_0.5.csv`
+  - `clusterSamples_DTA_MCC_0.5.csv`
+- Files with estimated numbers of infections, inbound travellers and calculated EII curves (in `epipath`):
+    - `estimated-daily-infections.csv` 
+    - `estimated-arrivals.csv`
+    - `estimated-introduction-index-31.csv` (assuming 31% asymptomatic)
+- Positive cases in the UK (in `casefile`)
+- Estimated infections across Europe, from Flaxman et al. (in `infectionfile`)
+
+## Output
+- Figures and tables.
+- Cluster statistics with estimated lineage importation times (as a `.csv` file).
+
+
+
+```{r load-data, cache=TRUE}
+             
+    ############
+    # Metadata #
+    ############
+    metadata              <- read.csv(paste0(inputpath, "metadata.csv"))
+    metadata$sample_date  <- ymd(metadata$sample_date)
+    metadata$decimal_date <- decimal_date(metadata$sample_date)    
+    metadata$taxon_label  <- metadata$sequence_name
+    #metadata$taxon_label <- gsub("/", "_", as.character(metadata$sequence_name))
+    
+    #################################
+    # Load and shift lineage TMRCAs #
+    #################################
+    clusterStats      <- read.csv(paste0(outputpath, "clusters_", cluster_f, ".csv"))
+    clusterStatsMCC   <- read.csv(paste0(outputpath, "clusters_", cluster_f, "_MCC_0.5.csv"))
+    clusterSamplesMCC <- read.csv(paste0(outputpath, "clusterSamples_", cluster_f, "_MCC_0.5.csv"))
+    
+    clusterStats$tmrca_calendar    <- ymd(clusterStats$tmrca_calendar)
+    clusterStatsMCC$tmrca_calendar <- ymd(clusterStatsMCC$tmrca_calendar)
+    clusterSamplesMCC$sample_date  <- ymd(clusterSamplesMCC$sample_date)
+
+    clusterStatsMCC$shift <- alpha + beta/clusterStatsMCC$seqs
+    clusterStatsMCC$tmrca_shifted <- clusterStatsMCC$tmrca - (clusterStatsMCC$shift/366)
+    clusterStatsMCC$tmrca_shifted_calendar <- as.Date(round_date(date_decimal(clusterStatsMCC$tmrca_shifted), unit = "day"))
+    clusterStatsMCC$detection_lag <- as.Date(round_date(date_decimal(clusterStatsMCC$oldest), unit = "day")) - clusterStatsMCC$tmrca_shifted_calendar
+
+    write.csv(clusterStatsMCC, paste0(outputpath, "clusters_", cluster_f, "_MCC_0.5_shifted.csv"), quote=FALSE, row.names=FALSE)
+
+    
+    ############################################
+    # UK weekly cases and estimated infections #
+    ############################################
+    
+    ukCases      <- read.csv(casefile)
+    ukCases$date <- as.Date(ukCases$date)
+
+    europeInfections      <- read.csv(infectionfile)
+    europeInfections$time <- as.Date(europeInfections$time)
+    
+    weekBreaks <- seq.Date(as.Date("2020-01-19"), as.Date("2020-06-28"), by="weeks")
+    ukWeekly   <- data.frame(date       = weekBreaks[2:length(weekBreaks)], 
+                             seqs       = hist(metadata$sample_date[metadata$country == "UK"], breaks=weekBreaks, plot=FALSE, right=FALSE)$counts, 
+                             cases      = getHistogram(ukCases$date, ukCases$newCasesBySpecimenDate,  
+                                                       breaks=weekBreaks)$counts,
+                             infections = getHistogram(europeInfections$time[europeInfections$country == "United_Kingdom"], 
+                                                       europeInfections$predicted_infections_mean[europeInfections$country == "United_Kingdom"],
+                                                       breaks=weekBreaks)$counts,
+                             infectionsLower = getHistogram(europeInfections$time[europeInfections$country == "United_Kingdom"], 
+                                                            europeInfections$predicted_infections_lower_CI_95[europeInfections$country == "United_Kingdom"],
+                                                            breaks=weekBreaks)$counts,
+                             infectionsUpper = getHistogram(europeInfections$time[europeInfections$country == "United_Kingdom"], 
+                                                            europeInfections$predicted_infections_higher_CI_95_cumulative.1[europeInfections$country == "United_Kingdom"],
+                                                            breaks=weekBreaks)$counts)
+    ukWeekly$seqsCum       <- cumsum(ukWeekly$seqs)
+    ukWeekly$casesCum      <- cumsum(ukWeekly$cases)
+    ukWeekly$infectionsCum <- cumsum(ukWeekly$infections)
+    ukWeekly$infectionsLowerCum <- cumsum(ukWeekly$infectionsLower)
+    ukWeekly$infectionsUpperCum <- cumsum(ukWeekly$infectionsUpper)
+    
+    
+    # dayBreaks <- seq.Date(as.Date("2020-01-19"), as.Date("2020-06-28"), by="day")
+    # ukDaily   <- data.frame(date       = dayBreaks[2:length(dayBreaks)], 
+    #                          seqs       = hist(metadata$sample_date[metadata$country == "UK"], breaks=dayBreaks, plot=FALSE, right=FALSE)$counts, 
+    #                          cases      = getHistogram(ukCases$date, ukCases$newCasesBySpecimenDate,  
+    #                                                    breaks=dayBreaks)$counts,
+    #                          infections = getHistogram(europeInfections$time[europeInfections$country == "United_Kingdom"], 
+    #                                                    europeInfections$predicted_infections_mean[europeInfections$country == "United_Kingdom"],
+    #                                                    breaks=dayBreaks)$counts,
+    #                          infectionsLower = getHistogram(europeInfections$time[europeInfections$country == "United_Kingdom"], 
+    #                                                         europeInfections$predicted_infections_lower_CI_95[europeInfections$country == "United_Kingdom"],
+    #                                                         breaks=dayBreaks)$counts,
+    #                          infectionsUpper = getHistogram(europeInfections$time[europeInfections$country == "United_Kingdom"], 
+    #                                                         europeInfections$predicted_infections_higher_CI_95_cumulative.1[europeInfections$country == "United_Kingdom"],
+    #                                                         breaks=dayBreaks)$counts)
+    # ukDaily$seqsCum       <- cumsum(ukDaily$seqs)
+    # ukDaily$casesCum      <- cumsum(ukDaily$cases)
+    # ukDaily$infectionsCum <- cumsum(ukDaily$infections)
+    # ukDaily$infectionsLowerCum <- cumsum(ukDaily$infectionsLower)
+    # ukDaily$infectionsUpperCum <- cumsum(ukDaily$infectionsUpper)
+    
+    
+    
+    #######
+    # EII #
+    #######
+    
+    eii      <- read.csv(paste0(epipath, "estimated-introduction-index-", asymptomatic, ".csv"))
+    eii$date <- as.Date(eii$date)
+    colnames(eii)[2] <- "location"
+    eii$location <- revalue(eii$location, c("other"="Other"))
+
+    countryList <- levels(eii$location)
+    countryList <- countryList[-which(countryList == "Other")]
+    
+    dates  <- sort(unique(eii$date))
+    eiiAll <- data.frame(date       = dates, 
+                         location   = rep("all", length(dates)),
+                         num_intros = sapply(dates, function(x) sum(eii$num_intros[eii$date == x])))
+    
+    eii <- rbind(eiiAll, eii)
+
+    # plot(eii$date[eii$location == "all"], eii$num_intros[eii$location == "all"], type='l')
+    # lines(eii$date[eii$location == "Spain"], eii$num_intros[eii$location == "Spain"], type='l', lty=2)
+    # lines(eii$date[eii$location == "France"], eii$num_intros[eii$location == "France"], type='l', lty=2)
+    
+    
+    #########################################
+    # Estimated daily numbers of infections #
+    #########################################
+    
+    infections <- read.csv(paste0(epipath, "estimated-daily-infections.csv"))
+    infections$date <- as.Date(infections$date)
+    
+    infectionsSpecific <- remove <- c()
+    for (country in countryList) {
+      mask   <- which(infections$location == country)
+      remove <- c(remove, mask)
+      infectionsSpecific <- rbind(infectionsSpecific, infections[mask, ])
+    }
+    infectionsSpecific$location <- as.character(infectionsSpecific$location)
+    
+    dates <- sort(unique(infections$date))
+    infectionsAll <- data.frame(date     = dates, 
+                                num_infs = sapply(dates, function(x) sum(infections$num_infs[infections$date == x])),
+                                location = rep("all", length(dates)))
+    
+    infections <- infections[-remove, ]
+    infectionsOther <- data.frame(date     = dates, 
+                                  num_infs = sapply(dates, function(x) sum(infections$num_infs[infections$date == x])),
+                                  location = rep("Other", length(dates)))
+    
+    infections <- rbind(infectionsAll, rbind(infectionsSpecific, infectionsOther))
+    
+    # Smooth with 7-day rolling mean
+    infections$num_infs_smoothed <- rep(0, nrow(infections))
+    for (country in levels(infections$location)) {
+      
+      mask      <- which(infections$location == country)
+      dateOrder <- mask[order(infections$date[mask])]
+      
+      infections$num_infs_smoothed[dateOrder] <- sapply(1:length(dateOrder), function(i) mean(infections$num_infs[dateOrder[max(i-3,1):min(i+3, length(dateOrder))]], na.rm = TRUE))
+    }
+    
+    # Total number of infected in each country by the end of the dataset
+    totalInfected <- sort(sapply(levels(infections$location), function(x) sum(infections$num_infs[infections$location == x], na.rm=TRUE)), decreasing = TRUE)
+    
+    # loc <- "Switzerland"
+    # plot(infections$date[infections$location == loc], infections$num_infs[infections$location == loc], type='l', lty=2)
+    # lines(infections$date[infections$location == loc], infections$num_infs_smoothed[infections$location == loc])
+    
+    
+    ############################
+    # Estimated daily arrivals #
+    ############################
+       
+    arrivals <- read.csv(paste0(epipath, "estimated-arrivals.csv"))
+    arrivals$date    <- as.Date(arrivals$date)
+    arrivals$location <- revalue(arrivals$location, c("United States"  = "US",
+                                                      "Czech Republic" = "Czechia",
+                                                      "Dominican Rep"  = "Dominican Republic", 
+                                                      "Korea (South)"  = "Korea, South"))
+    
+    arrivalsSpecific <- remove <- c()
+    for (country in countryList) {
+      mask   <- which(arrivals$location == country)
+      remove <- c(remove, mask)
+      arrivalsSpecific <- rbind(arrivalsSpecific, arrivals[mask, c("date", "location", "estimate")])
+    }
+    arrivalsSpecific$location <- as.character(arrivalsSpecific$location)
+    
+    dates <- sort(unique(arrivals$date))
+    arrivalsAll <- data.frame(date     = dates, 
+                              location = rep("all", length(dates)),
+                              estimate = sapply(dates, function(x) sum(arrivals$estimate[arrivals$date == x])))
+    
+    arrivals <- arrivals[-remove, ]
+    arrivalsOther <- data.frame(date     = dates, 
+                                location = rep("Other", length(dates)),
+                                estimate = sapply(dates, function(x) sum(arrivals$estimate[arrivals$date == x])))
+    
+    arrivals <- rbind(arrivalsAll, rbind(arrivalsSpecific, arrivalsOther))
+    
+    # Smooth with 7-day rolling mean
+    arrivals$estimate_smoothed <- rep(0, nrow(arrivals))
+    for (country in levels(arrivals$location)) {
+      
+      mask      <- which(arrivals$location == country)
+      dateOrder <- mask[order(arrivals$date[mask])]
+      
+      arrivals$estimate_smoothed[dateOrder] <- sapply(1:length(dateOrder), function(i) mean(arrivals$estimate[dateOrder[max(i-3,1):min(i+3, length(dateOrder))]], na.rm = TRUE))
+    }
+    
+    # plot(arrivals$date[arrivals$location == "Spain"], arrivals$estimate[arrivals$location == "Spain"], type='l')
+    #lines(arrivals$date[arrivals$location == "Spain"], arrivals$estimate_smoothed[arrivals$location == "Spain"], type='l', lty=2)
+    #lines(arrivals$date[arrivals$location == "France"], arrivals$estimate[arrivals$location == "France"], type='l', lty=2)
+    
+    
+    #################################
+    # Lag model parameter estimates #
+    #################################
+    
+    lagmodel <- read.csv(paste0(epipath, "tree-varying-lag-estimates.csv"))
+    
+    
+```
+
+
+\clearpage
+
+# Genomes compared to cases and estimated infections
+
+
+```{r sample-histogram, fig.width=7, fig.height=3, fig.cap = "Collection dates of the 50,887 genomes analysed here (left-hand axis). Genomes are coloured by sampling location (England=red, Scotland=dark blue, Wales=yellow, Northern Ireland=light blue, elsewhere=grey). The solid line shows the cumulative number of UK virus genomes (right-hand axis). The dashed and dotted lines show, respectively, the cumulative number of laboratory-confirmed UK cases (by specimen date) and the estimated number of UK infections (Flaxman et al. 2020; grey shading=95% CI; right-hand axis). Due to retrospective screening, the cumulative number of genomes early in the epidemic exceeds that of confirmed cases."}
+
+    sampleBreaks <- seq.Date(as.Date("2019-12-01"), as.Date("2020-06-30"), by="days")
+    seq_hist_eng <- hist(metadata$sample_date[metadata$adm1 == "UK-ENG"], breaks=sampleBreaks, plot=FALSE, right=FALSE)   
+    seq_hist_sct <- hist(metadata$sample_date[metadata$adm1 == "UK-SCT"], breaks=sampleBreaks, plot=FALSE, right=FALSE)   
+    seq_hist_wls <- hist(metadata$sample_date[metadata$adm1 == "UK-WLS"], breaks=sampleBreaks, plot=FALSE, right=FALSE)   
+    seq_hist_nir <- hist(metadata$sample_date[metadata$adm1 == "UK-NIR"], breaks=sampleBreaks, plot=FALSE, right=FALSE)   
+    seq_hist_oth <- hist(metadata$sample_date[metadata$country != "UK"],  breaks=sampleBreaks, plot=FALSE, right=FALSE)   
+    
+    seq_hist_breakdown <- data.frame("eng" = seq_hist_eng$counts, 
+                                     "sct" = seq_hist_sct$counts, 
+                                     "wls" = seq_hist_wls$counts, 
+                                     "nir" = seq_hist_nir$counts, 
+                                     "oth" = seq_hist_oth$counts)
+          
+
+    # Sequence histogram
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    dateFreqDistribution(t(seq_hist_breakdown), sampleBreaks, plot.ci=FALSE, barplot=TRUE,
+                         startDate = startDate, endDate = "2020-06-21", col=mPal(unlist(ukPal), 0.75), border=mPal(unlist(ukPal)), ymax=2000, 
+                         ylab = "Frequency of genomes\n(per day)")
+    
+    legend("top", horiz=FALSE, inset=c(0,-0.3), bty='n', xpd=TRUE, ncol=3,
+           fill=mPal(unlist(ukPal), 0.75), border = mPal(unlist(ukPal)), 
+           legend = c("England", "Scotland", "Wales", "Northern Ireland", "Other countries"),
+           cex=0.8)
+    
+    
+    # Cumulative sequences, cases and infections
+    par(new = TRUE)
+    ylims <- c(1,1E7)
+    plot(1, type='n', xlim=c(startDate, as.Date("2020-06-21")), ylim=ylims, 
+         axes=FALSE, xlab="", ylab="", log='y', yaxs='i', xaxs='i')
+    
+    #axis(4, las=1, at=axTicks(4), labels=format(axTicks(4), scientific=FALSE))
+    plotLogAxis(lim=ylims, side=4)
+    mtext(side=4, text="Cumulative cases and genomes", line=2, cex=0.8)
+
+    
+    ukseqs_daily <- data.frame(date = sampleBreaks[1:(length(sampleBreaks)-1)],
+                               seqs = rowSums(seq_hist_breakdown[, -c(5)]))
+    lines(ukseqs_daily$date, cumsum(ukseqs_daily$seqs), lwd=2)
+    
+    polygon(c(europeInfections$time[europeInfections$country == "United_Kingdom"], 
+              rev(europeInfections$time[europeInfections$country == "United_Kingdom"])), 
+            c(europeInfections$predicted_infections_higher_CI_95_cumulative[europeInfections$country == "United_Kingdom"], 
+              rev(europeInfections$predicted_infections_lower_CI_95_cumulative[europeInfections$country == "United_Kingdom"])), 
+              border=NA, col = mPal(ukPal$oth, 0.75))
+    lines(europeInfections$time[europeInfections$country == "United_Kingdom"], europeInfections$predicted_infections_mean_cumulative[europeInfections$country == "United_Kingdom"], 
+          lty=3, lwd=2)
+    lines(c(ukCases$date, min(ukCases$date)-1), c(ukCases$cumCasesBySpecimenDate, 1E-10), lwd=2, lty=2)
+    
+    idx <- which(ukWeekly$date == as.Date("2020-05-17"))
+    text(x = as.Date("2020-05-17"), y = ukWeekly$infectionsCum[idx]+5E6, "Estimated UK\ninfections", 
+         pos=1, xpd=TRUE, cex=0.6)
+    text(x = as.Date("2020-05-17"), y = ukWeekly$casesCum[idx]+1.5E5, "Reported UK\ncases", 
+         pos=1, xpd=TRUE, cex=0.6)
+    text(x = as.Date("2020-05-17"), y = ukWeekly$seqsCum[idx], "UK genomes\nsequenced", 
+         pos=1, xpd=TRUE, cex=0.6)
+    
+    
+```
+
+
+
+
+```{r sample-density, fig.width=6, fig.height=3, fig.cap = "Top row: Proportions of laborotory-confirmed UK cases sequenced by 5 April and 3 May, respectively. Bottom row: Proportions of the estimated number of UK infections (estimate from Flaxman et al. 2020) sequenced by 5 April and 3 May, respectively."}
+
+    layout(matrix(1:4, nrow = 2, byrow=FALSE))
+
+    idx <- which(ukWeekly$date == as.Date("2020-04-05"))
+
+    # Sequencing proportions
+    par(mar=c(0,0,1,2))
+    plotPieProp(ukWeekly$seqsCum[idx], ukWeekly$casesCum[idx], title="Reported cases by 5 April", col=ukPal$sct, line=0)
+    
+    par(mar=c(0,0,1,2))
+    plotPieProp(ukWeekly$seqsCum[idx], ukWeekly$infectionsCum[idx], title="Estimated infections by 5 April", col=ukPal$sct, line=0)
+    
+    idx <- which(ukWeekly$date == as.Date("2020-05-03"))
+
+    # Sequencing proportions
+    par(mar=c(0,0,1,2))
+    plotPieProp(ukWeekly$seqsCum[idx], ukWeekly$casesCum[idx], title="Reported cases by May 3", col=ukPal$sct, line=0)
+    
+    par(mar=c(0,0,1,2))
+    plotPieProp(ukWeekly$seqsCum[idx], ukWeekly$infectionsCum[idx], title="Estimated infections by May 3", col=ukPal$sct, line=0)
+
+
+```
+
+```{r sampling-proportion-weekly, fig.width=7, fig.height=3, fig.cap = "Proportion of weekly reported UK cases (solid line) and estimated infections (dotted line; Flaxman et al. 2020) included in our genome sequence dataset."}
+
+    cleanProp <- function(x) {
+        x[is.nan(x)] <- NA
+        x[is.infinite(x)] <- NA
+        x[x > 1] <- 1
+        return(x)
+    }
+
+    caseProp <- cleanProp(ukWeekly$seqs/ukWeekly$cases)
+    infProp  <- cleanProp(ukWeekly$seqs/ukWeekly$infections)
+    infMask  <- !is.na(infProp)
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    plotShadedAxes(xlim=c(startDate, as.Date("2020-06-21")), ylim=c(0, 1.015), yaxs='i', ylab="Proportion")
+  
+    #polygon(c(ukWeekly$date[infMask], rev(ukWeekly$date[infMask])), c(cleanProp(ukWeekly$seqs/ukWeekly$infectionsLower)[infMask], rev(cleanProp(ukWeekly$seqs/ukWeekly$infectionsUpper)[infMask])), 
+    #        col = mPal(ukPal$oth, 0.75), border=NA)
+    infPropLower <- cleanProp(ukWeekly$seqs/ukWeekly$infectionsLower)
+    infPropUpper <- cleanProp(ukWeekly$seqs/ukWeekly$infectionsUpper)
+    for (i in 2:length(infMask)) {
+        rect(ukWeekly$date[i-1], infPropLower[i], ukWeekly$date[i], infPropUpper[i], col = mPal(ukPal$oth, 0.75), border=NA)
+    }
+    lines(ukWeekly$date, infProp, lty=3, lwd=2, type='S')
+    idx <- min(which(infMask))
+    lines(ukWeekly$date[(idx-1):idx], rep(infProp[idx],2), lty=3, lwd=2)
+    lines(ukWeekly$date, caseProp, lty=1, lwd=2, type='S')
+    
+    
+    legend("bottom", horiz=FALSE, inset=c(0,1), bty='n', xpd=TRUE, ncol=2,
+           lty=c(1,3), lwd=2,
+           legend = c("reported cases", "estimated infections"), title="Sequenced proportion of weekly", cex=par("cex.lab"))
+    
+    # Inset start
+    ymax <- 0.1
+    insetStart <- as.Date("2020-02-16")
+    insetEnd   <- as.Date("2020-05-10")
+    
+    rect(insetStart, 0, insetEnd, ymax, lty=2)
+
+    par(mar=c(2,2,0.5,0.5), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0), fig=c(0.445, 0.875, 0.45, 0.88), new=TRUE)
+    
+    plotShadedAxes(xlim=c(insetStart, insetEnd), ylim=c(0, ymax), yaxs='i', side=4)
+  
+    #polygon(c(ukWeekly$date[infMask], rev(ukWeekly$date[infMask])), c(cleanProp(ukWeekly$seqs/ukWeekly$infectionsLower)[infMask], rev(cleanProp(ukWeekly$seqs/ukWeekly$infectionsUpper)[infMask])), 
+    #        col = mPal(ukPal$oth, 0.75), border=NA)
+    for (i in 2:length(infMask)) {
+        rect(ukWeekly$date[i-1], infPropLower[i], ukWeekly$date[i], infPropUpper[i], col = mPal(ukPal$oth, 0.75), border=NA)
+    }
+    lines(ukWeekly$date, infProp, lty=3, lwd=2, type='S')
+    idx <- min(which(infMask))
+    lines(ukWeekly$date[(idx-1):idx], rep(infProp[idx],2), lty=3, lwd=2)
+    lines(ukWeekly$date, caseProp, lty=1, lwd=2, type='S')
+
+    rect(insetStart, 0, insetEnd, ymax, xpd=TRUE)
+
+
+    #plotShadedAxes(xlim=c(startDate, as.Date("2020-06-21")), ylim=c(0, 10000), yaxs='i')
+    #lines(ukCases$date, ukCases$newCasesBySpecimenDate)
+    
+    #dateFreqDistribution(rev(ukCases$newCasesBySpecimenDate[2:nrow(ukCases)]), rev(ukCases$date), startDate="2020-01-31", endDate="2020-06-21", barplot=TRUE)
+    
+```
+
+
+```{r sampling-proportion-weekly-flipped, fig.width=7, fig.height=3, fig.cap = "Proportion of weekly reported UK cases (solid line) and estimated infections (dotted line; Flaxman et al. 2020) included in our genome sequence dataset."}
+
+    cleanProp <- function(x) {
+        x[is.nan(x)] <- NA
+        x[is.infinite(x)] <- NA
+        x[x > 1] <- 1
+        return(x)
+    }
+
+    caseProp <- cleanProp(ukWeekly$seqs/ukWeekly$cases)
+    infProp  <- cleanProp(ukWeekly$seqs/ukWeekly$infections)
+    infMask  <- !is.na(infProp)
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    plotShadedAxes(xlim=c(startDate, as.Date("2020-06-21")), ylim=c(0, 0.1), yaxs='i', ylab="Proportion")
+  
+    infPropLower <- cleanProp(ukWeekly$seqs/ukWeekly$infectionsLower)
+    infPropUpper <- cleanProp(ukWeekly$seqs/ukWeekly$infectionsUpper)
+    for (i in 2:length(infMask)) {
+        rect(ukWeekly$date[i-1], infPropLower[i], ukWeekly$date[i], infPropUpper[i], col = mPal(ukPal$oth, 0.75), border=NA)
+    }
+    lines(ukWeekly$date, infProp, lty=3, lwd=2, type='S')
+    idx <- min(which(infMask))
+    lines(ukWeekly$date[(idx-1):idx], rep(infProp[idx],2), lty=3, lwd=2)
+    lines(ukWeekly$date, caseProp, lty=1, lwd=2, type='S')
+    
+    
+    legend("bottomleft", horiz=FALSE, inset=c(0,1), bty='n', xpd=TRUE, ncol=2,
+           lty=c(1,3), lwd=2,
+           legend = c("reported cases", "estimated infections"), title="Sequenced proportion of weekly", cex=par("cex.lab"))
+
+    # Inset start
+    ymax <- 1
+    insetStart <- as.Date("2020-01-19")
+    insetEnd   <- as.Date("2020-06-21")
+    
+    #rect(insetStart, 0, insetEnd, ymax, lty=2)
+    
+    par(mar=c(2,2,0.5,0.5), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0), fig=c(0.65, 0.95, 0.55, 0.95), new=TRUE)
+    
+    plotShadedAxes(xlim=c(insetStart, insetEnd), ylim=c(0, ymax), yaxs='i', side=2, smallBreaks = "weeks", thinXLabel = 4, thinYLabel=5)
+    
+    #polygon(c(ukWeekly$date[infMask], rev(ukWeekly$date[infMask])), c(cleanProp(ukWeekly$seqs/ukWeekly$infectionsLower)[infMask], rev(cleanProp(ukWeekly$seqs/ukWeekly$infectionsUpper)[infMask])),
+    #        col = mPal(ukPal$oth, 0.75), border=NA)
+    for (i in 2:length(infMask)) {
+        rect(ukWeekly$date[i-1], infPropLower[i], ukWeekly$date[i], infPropUpper[i], col = mPal(ukPal$oth, 0.75), border=NA)
+    }
+    lines(ukWeekly$date, infProp, lty=3, lwd=2, type='S')
+    idx <- min(which(infMask))
+    lines(ukWeekly$date[(idx-1):idx], rep(infProp[idx],2), lty=3, lwd=2)
+    lines(ukWeekly$date, caseProp, lty=1, lwd=2, type='S')
+    
+    rect(insetStart, 0, insetEnd, ymax, xpd=TRUE)
+    
+```
+
+
+```{r sampling-proportion-weekly-infections, fig.width=7, fig.height=3, fig.cap = "Proportion of weekly estimated UK infections (Flaxman et al. 2020) included in our genome sequence dataset."}
+
+    cleanProp <- function(x) {
+        x[is.nan(x)] <- NA
+        x[is.infinite(x)] <- NA
+        x[x > 1] <- 1
+        return(x)
+    }
+
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    plotShadedAxes(xlim=c(startDate, as.Date("2020-06-21")), ylim=c(0, 0.1), yaxs='i', ylab="Proportion")
+
+    infProp  <- cleanProp(ukWeekly$seqs/ukWeekly$infections)
+    infMask  <- !is.na(infProp)
+    infPropLower <- cleanProp(ukWeekly$seqs/ukWeekly$infectionsLower)
+    infPropUpper <- cleanProp(ukWeekly$seqs/ukWeekly$infectionsUpper)
+    for (i in 2:length(infMask)) {
+        rect(ukWeekly$date[i-1], infPropLower[i], ukWeekly$date[i], infPropUpper[i], col = mPal(ukPal$oth, 0.75), border=NA)
+    }
+    lines(ukWeekly$date, infProp, lty=3, lwd=2, type='S')
+    idx <- min(which(infMask))
+    lines(ukWeekly$date[(idx-1):idx], rep(infProp[idx],2), lty=3, lwd=2)
+    
+    #legend("bottomleft", horiz=FALSE, inset=c(0,1), bty='n', xpd=TRUE, ncol=2,
+    #       lty=c(1,3), lwd=2,
+    #       legend = c("reported cases", "estimated infections"), title="Sequenced proportion of weekly", cex=par("cex.lab"))
+
+    
+    
+```
+
+
+
+```{r sampling-proportion-cumulative, fig.width=7, fig.height=3, fig.cap = "Proportion of the cumulative weekly reported UK cases (solid line) and estimated infections (dotted line; Flaxman et al. 2020) included in our genome sequence dataset over time."}
+
+    getCumulativeSequences <- function(dateRange, seqDates) {
+        
+        return <- data.frame(date = dateRange, 
+                             seqs = sapply(dateRange, function(x) sum(seqDates <= x)))
+    
+    }
+    
+    seqsCum     <- getCumulativeSequences(ukCases$date, metadata$sample_date[metadata$country == "UK"])
+    cumCaseProp <- cleanProp(seqsCum$seqs/ukCases$cumCasesBySpecimenDate)
+    
+    seqsCum     <- getCumulativeSequences(europeInfections$time[europeInfections$country == "United_Kingdom"], metadata$sample_date[metadata$country == "UK"])
+    cumInfProp  <- cleanProp(seqsCum$seqs/europeInfections$predicted_infections_mean_cumulative[europeInfections$country == "United_Kingdom"])
+    cumInfPropL <- cleanProp(seqsCum$seqs/europeInfections$predicted_infections_lower_CI_95_cumulative[europeInfections$country == "United_Kingdom"])
+    cumInfPropU <- cleanProp(seqsCum$seqs/europeInfections$predicted_infections_higher_CI_95_cumulative[europeInfections$country == "United_Kingdom"])  
+    
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+    
+    plotShadedAxes(xlim=c(startDate, as.Date("2020-06-21")), ylim=c(0, 1.015), yaxs='i', ylab="Cumulative proportion")
+    
+    polygon(c(seqsCum$date, rev(seqsCum$date)), c(cumInfPropL, rev(cumInfPropU)), col = mPal(ukPal$oth, 0.75), border=NA)
+    lines(seqsCum$date, cumInfProp, lty=3, lwd=2)
+    lines(ukCases$date, cumCaseProp, lty=1, lwd=2)
+    
+    legend("bottom", horiz=FALSE, inset=c(0,1), bty='n', xpd=TRUE, ncol=2,
+           lty=c(1,3), lwd=2,
+           legend = c("reported cases", "estimated infections"), title="Sequenced proportion of cumulative", cex=par("cex.lab"))
+    
+    # Inset start
+    ymax <- 0.05
+    insetStart <- as.Date("2020-02-16")
+    insetEnd   <- as.Date("2020-05-10")
+    
+    rect(insetStart, 0, insetEnd, ymax, lty=2)
+    
+    par(mar=c(2,2,0.5,0.5), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0), fig=c(0.445, 0.875, 0.45, 0.88), new=TRUE)
+    
+    plotShadedAxes(xlim=c(insetStart, insetEnd), ylim=c(0, ymax), yaxs='i', side=4)
+    
+    polygon(c(seqsCum$date, rev(seqsCum$date)), c(cumInfPropL, rev(cumInfPropU)), col = mPal(ukPal$oth, 0.75), border=NA)
+    lines(seqsCum$date, cumInfProp, lty=3, lwd=2)
+    lines(ukCases$date, cumCaseProp, lty=1, lwd=2)
+    
+    rect(insetStart, 0, insetEnd, ymax, xpd=TRUE)
+
+```
+
+
+\clearpage
+
+# Arrivals and estimated infections
+
+
+```{r travel-cases-all, fig.width=5, fig.height=3, fig.cap="Estimated number of inbound travellers to the UK per day (black) and estimated number of infectious cases worldwide (dashed red, 7-day rolling average). Arrows here shows from left to right the first self-isolation advice for returning travellers from China, Italy, and the start of the UK national lockdown."}
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3.25,0.75,0))
+    plotArrivalsInfections(arrivals, infections, location="all", startDate = startDate, endDate = endDate, cex.lab=0.8)
+    
+    # Mark lockdown    
+    points(x=travelDates$lockdown, y=0.1*1E6, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+    
+    # Mark self-isolation advice
+    points(x=travelDates$china, y=0.1*1E6, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(countryPal$China))
+    points(x=travelDates$italy, y=0.1*1E6, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(countryPal$Italy))
+```
+
+
+
+```{r travel-cases-countries-top12, fig.width=15, fig.height=12, fig.cap="Estimated numbers of inbound travellers to the UK per day, and estimated number of new infections per day, for the 12 countries we estimate to have been responsible for the most importations to the UK (see Table 3). We estimate that these 12 countries contributed 97.6% of importations to the UK."}
+
+    layout(matrix(c(1:12), nrow=4, byrow=TRUE))
+    par(mar=c(4,6,2.5,6), cex.axis=0.8, cex.lab=1.2, cex.main=1.5, mgp=c(3.25,0.5,0))
+
+    countries1 <- c("Spain", 
+                    "France", 
+                    "Italy",
+                    "US",
+                    "Netherlands",
+                    "Belgium",
+                    "Ireland", 
+                    "Germany",
+                    "Switzerland",
+                    "Portugal",
+                    "Sweden", 
+                    "China")
+    
+    # Specific countries
+    for (i in 1:length(countries1)) {
+        plotArrivalsInfections(arrivals, infections, location=countries1[i], startDate = startDate, endDate = endDate, cex.lab=0.8, label=LETTERS[i])
+        title(capitalise(countries1[i]))
+    }
+    
+```
+
+```{r travel-cases-countries-other, fig.width=15, fig.height=12, fig.cap="Estimated numbers of inbound travellers to the UK per day, and estimated number of new infections per day, for a range of countries. (A-F) shows the 6 countries that made the largest contribution to importations after the 12 in the previous figure (see Table 3). Together these 6 countries contributed 1.19% of estimated importations to the UK. (G-L) 6 countries with large epidemics that did not contribute many importations to the UK, either because of low numbers of inbound travellers or because their epidemics started later. These 6 countries combined contributed less than 0.5% of importations into the UK."}
+
+    layout(matrix(c(1:12), nrow=4, byrow=TRUE))
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=1.2, cex.main=1.5, mgp=c(3.25,0.5,0))
+
+    countries2 <- c("Denmark", "Austria", "Romania", "Norway", "Poland", "Canada", "Iran", "Brazil", "India", "Russia", "Mexico", "South Africa") # Japan, Korea, South
+    
+    # Specific countries
+    for (i in 1:length(countries2)) {
+        plotArrivalsInfections(arrivals, infections, location=countries2[i], startDate = startDate, endDate = endDate, cex.lab=0.8, label=LETTERS[i])
+        title(capitalise(countries2[i]))
+    }
+    
+    
+```
+
+\clearpage
+
+# EII curves
+
+```{r eii-tmrca-all, fig.width=5, fig.height=3, fig.cap="Estimated importation intensity (EII) curve (black) and the histogram of lineage TMRCAs (grey). Arrows here shows from left to right the first self-isolation advice for returning travellers from China, Italy, and the start of the UK national lockdown."}
+
+
+    tmrcaBreaks <- seq.Date(as.Date("2019-12-01"), as.Date("2020-06-26"), by="days")
+    tmrca_hist  <- hist(clusterStatsMCC$tmrca_calendar, breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+    dateFreqDistribution(tmrca_hist$counts, tmrcaBreaks, plot.ci=FALSE, side=4, ylab="",
+                         startDate = startDate, endDate = endDate, col=mPal(ukPal$oth), ymax=70)
+    mtext(side=4, text="Frequency of TMRCAs\n(per day)", line=3, cex=par("cex.lab"))
+    
+    par(new=TRUE)
+    ymax <- 1200
+
+    plot(1, type='n', xlim=c(startDate, endDate), ylim=c(0,1200), axes=FALSE, 
+         xaxs='i', yaxs='i', xlab="", ylab="")
+    lines(eii$date[eii$location == "all"], eii$num_intros[eii$location == "all"], lwd=2)
+    axis(2, las=1)
+    mtext(side=2, text="Estimated importation intensity\n(solid line)", line=2, cex=par("cex.lab"))
+
+    # Mark lockdown    
+    points(x=travelDates$lockdown, y=0.1*ymax, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+    
+    # Mark self-isolation advice
+    points(x=travelDates$china, y=0.1*ymax, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(countryPal$China))
+    points(x=travelDates$italy, y=0.1*ymax, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(countryPal$Italy))
+
+```
+
+
+
+
+```{r eii-tmrca-countries, fig.width=10, fig.height=8, fig.cap="Estimated importation intensity (EII) curves for the 12 countries estimated to have contributed the most importations to the UK epidemic (see Table 3). Panel A shows the EII for all countries. The red arrows indicate the start of the UK lockdown."}
+    
+    layout(matrix(c(1,2,5,6,3,4,7,8), nrow=4, byrow=TRUE), heights=c(3,1,3,1))
+    par(mar=c(4,6,2.5,6), cex.axis=1, cex.lab=1.2, cex.main=1.5, mgp=c(3,0.75,0))
+  
+    plotShadedAxes(xlim=c(startDate, endDate), ylim=c(0, 1200), axes=FALSE, label="A", line=0, yaxs='i', 
+                   ylab = "Estimated importation intensity")
+    lines(eii$date[eii$location == "all"], eii$num_intros[eii$location == "all"], lwd=2)
+    abline(v=as.Date(c("2020-03-12", "2020-03-16", "2020-03-20")), lty=3, col="black")
+    abline(v=as.Date("2020-03-23"), lty=1, col=ukPal$eng)
+    
+    #points(x=travelDates$lockdown, y=0.075*1200, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+
+    
+    ymax <- list(B=500, C=100, D=20)
+    panelCountries <- list(B=c("Spain", "France", "Italy", "Belgium"), 
+                           C=c("Netherlands", "Ireland", "Switzerland", "US"), 
+                           D=c("Germany", "Sweden", "Portugal", "China", "Other"))
+    for (i in names(panelCountries)) {
+      
+      
+        plotCountries <- panelCountries[[i]]
+        
+        plotShadedAxes(xlim=c(startDate, endDate), ylim=c(0, ymax[[i]]), axes=FALSE, label=i, line=0, yaxs='i', 
+                       ylab = "Estimated importation intensity")
+    
+        for (country in plotCountries) {
+            lines(eii$date[eii$location == country], eii$num_intros[eii$location == country], col=mPal(countryPal[[country]]), lwd=2)
+            #points(eii$date[eii$location == country], eii$num_intros[eii$location == country], col=mPal(countryPal[[country]]), pch=20)
+        }
+        
+        legend('bottom', horiz=FALSE, inset=c(0, 1), bty='n', 
+               col = sapply(plotCountries, function(x) countryPal[[x]]), 
+               legend=plotCountries, 
+               ncol=ceiling(length(plotCountries)/2), seg.len=1, lwd=2, lty=1, xpd=TRUE, cex=par("cex.axis"))
+        
+        # Mark lockdown    
+        #points(x=travelDates$lockdown, y=0.075*ymax[[i]], pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+        abline(v=as.Date("2020-03-23"), lty=1, col=ukPal$eng)
+        
+        if (i == "B") { 
+            abline(v=as.Date("2020-02-25"), lty=3, col=countryPal$Italy)
+        } else 
+        if (i == "D") {
+            abline(v=as.Date("2020-01-28"), lty=3, col=countryPal$China)
+        }
+
+    }
+    
+    
+    
+    ###################################
+    # NPIs and travel recommendations #
+    ###################################
+    par(mar=c(1,6,0,6))
+
+    plot(1, type='n', ylim=c(0,8.5), xlim=c(startDate, endDate),
+         xaxs='i', yaxs='i', bty='n', axes=FALSE, xlab="", ylab="", las=2)
+    
+    # Self isolate if symptomatic (experiencing a cough or fever symptoms)
+    rect(as.Date("2020-03-12"), 6, endDate, 7, border=NA, col=mPal(ukPal$oth))
+    
+    # Social distancing encouraged (advice against non-essential travel and contact with others, 
+    # avoid pubs, clubs, theatres and work from home if possible)
+    rect(as.Date("2020-03-16"), 4.5, endDate, 5.5, border=NA, col=mPal(ukPal$oth))
+    
+    # School closure ordered, closure of public venues (pubs, restaurants, gyms, leisure centres, nightclubs, theatres, cinemas)
+    rect(as.Date("2020-03-20"), 3, endDate, 4, border=NA, col=mPal(ukPal$oth))
+    
+    # Lockdown
+    rect(as.Date("2020-03-23"), 1.5, endDate, 2.5, border=NA, col=mPal(ukPal$eng))
+    
+    text(x=endDate, y=7.5, "Non-pharmaceutical interventions ", cex=par("cex.lab"), pos=2)
+    text(x=endDate, y=c(2, 3.5, 5, 6.5)-0.1,
+           c("Lockdown", 
+             "School closure", 
+             "Social distancing", 
+             "Self-isolation"),
+         pos=2, srt=0, cex=par("cex.axis"), col="white", srt=0, xpd=TRUE)
+
+    
+    
+    
+    
+    plot(1, type='n', ylim=c(0,8.5), xlim=c(startDate, endDate),
+         xaxs='i', yaxs='i', bty='n', axes=FALSE, xlab="", ylab="", las=2)
+    
+    # Italy, Iran, Vietnam, Cambodia, Laos, Myanmar
+    rect(as.Date("2020-02-25"), 6, endDate, 7, border=NA, col=mPal(countryPal$Italy))
+    rect(as.Date("2020-02-25"), 6, as.Date("2020-03-05"), 7, border=NA, angle=45, density = 50, col="white")
+
+
+    text(x=endDate, y=7.5, "Self-isolation advice", cex=par("cex.lab"), pos=2)
+    text(x=endDate, y=6.5, "Italy", pos=2, srt=0, cex=par("cex.axis"), col="white", srt=0, xpd=TRUE)
+
+    
+        
+    plot(1, type='n', axes=FALSE, ylab="", xlab="")
+    
+    
+    
+    plot(1, type='n', ylim=c(0,8.5), xlim=c(startDate, endDate),
+         xaxs='i', yaxs='i', bty='n', axes=FALSE, xlab="", ylab="", las=2)
+
+    # China
+    rect(as.Date("2020-01-28"), 6, endDate, 7, border=NA, col=mPal(countryPal$China))
+    rect(as.Date("2020-01-28"), 6, as.Date("2020-01-31"), 7, border=NA, angle=45, density = 50, col="white")
+    
+    text(x=endDate, y=7.5, "Self-isolation advice", cex=par("cex.lab"), pos=2)
+    text(x=endDate, y=6.5, "China", pos=2, srt=0, cex=par("cex.axis"), col="white", srt=0, xpd=TRUE)
+
+```
+
+
+
+\clearpage
+
+# Lineage importation distribution (shifted TMRCA distribution)
+- Built MCC tree from 2000 posterior trees and used a threshold of 0.5 posterior probability to identify internal nodes in the UK (and identify transmission lineages)
+- Dataset contains `r length(levels(clusterStatsMCC$cluster))` UK transmission lineages (2 or more sequences), comprising `r sum(clusterStatsMCC$seqs)` sequences from the UK, as well as a further `r sum(metadata$country == "UK") - sum(clusterStatsMCC$seqs)` singletons.
+- Mean and SD of the importation (shifted TMRCA) distribution: `r round_date(date_decimal(mean(clusterStatsMCC$tmrca_shifted)), unit="day")` ± `r round(sd(clusterStatsMCC$tmrca_shifted)*366,3)` days (singletons excluded).
+- Median and interquartile range of the importation (shifted TMRCA) distribution `r round_date(date_decimal(median(clusterStatsMCC$tmrca_shifted)), unit="day")` [`r round_date(date_decimal(quantile(clusterStatsMCC$tmrca_shifted, c(0.25, 0.75))), unit="day")`] (singletons excluded).
+- 80% of importations fall in [`r round_date(date_decimal(quantile(clusterStatsMCC$tmrca_shifted, c(0.1, 0.9))), unit="day")`].
+
+
+
+```{r shift-distribution, results="asis"}
+
+    sizeShifts <- list(all   = clusterStatsMCC$shift, 
+                       small = clusterStatsMCC$shift[clusterStatsMCC$seqs <= 10],
+                       med   = clusterStatsMCC$shift[clusterStatsMCC$seqs > 10 & clusterStatsMCC$seqs <= 100],
+                       big   = clusterStatsMCC$shift[clusterStatsMCC$seqs > 100 & clusterStatsMCC$seqs <= 1000],
+                       huge  = clusterStatsMCC$shift[clusterStatsMCC$seqs > 1000])
+
+    sizeLags <- list(all   = clusterStatsMCC$detection_lag, 
+                     small = clusterStatsMCC$detection_lag[clusterStatsMCC$seqs <= 10],
+                     med   = clusterStatsMCC$detection_lag[clusterStatsMCC$seqs > 10 & clusterStatsMCC$seqs <= 100],
+                     big   = clusterStatsMCC$detection_lag[clusterStatsMCC$seqs > 100 & clusterStatsMCC$seqs <= 1000],
+                     huge  = clusterStatsMCC$detection_lag[clusterStatsMCC$seqs > 1000])
+
+
+    weekShifts <- weekLags <- weekSizes <- list()
+    weekBreaks <- seq.Date(as.Date("2020-01-05"), as.Date("2020-06-21"), by="weeks")
+    for (i in 2:length(weekBreaks)) {
+        weekShifts[[format.Date(weekBreaks[i-1], format="%b %d")]] <- clusterStatsMCC$shift[clusterStatsMCC$tmrca_shifted_calendar >=  weekBreaks[i-1] & 
+                                                                      clusterStatsMCC$tmrca_shifted_calendar < weekBreaks[i]]
+        weekLags[[format.Date(weekBreaks[i-1], format="%b %d")]]   <- clusterStatsMCC$detection_lag[clusterStatsMCC$tmrca_shifted_calendar >=  weekBreaks[i-1] & 
+                                                                      clusterStatsMCC$tmrca_shifted_calendar < weekBreaks[i]]
+        weekSizes[[format.Date(weekBreaks[i-1], format="%b %d")]]  <- clusterStatsMCC$seqs[clusterStatsMCC$tmrca_shifted_calendar >=  weekBreaks[i-1] & 
+                                                                      clusterStatsMCC$tmrca_shifted_calendar < weekBreaks[i]]
+    }
+    
+    
+    
+    sizeShiftTable <- data.frame(size = c("All", "2 to 10", "11 to 100", "101 to 1000", "Bigger than 1000"), 
+                                 lineages = sapply(sizeShifts, length), 
+                                 shiftMeanSD   = sapply(sizeShifts, function(x) paste0(round(mean(x),2), " ± ", round(sd(x),2))), 
+                                 ShiftMedIQR   = sapply(sizeShifts, function(x) paste0(round(median(x),2), " [", paste(round(quantile(x, c(0.25, 0.75)),2), collapse="-"), "]")),
+                                 lagMeanSD   = sapply(sizeLags, function(x) paste0(round(mean(x),2), " ± ", round(sd(x),2))), 
+                                 lagMedIQR   = sapply(sizeLags, function(x) paste0(round(median(x),2), " [", paste(round(quantile(x, c(0.25, 0.75)),2), collapse="-"), "]")) )
+    
+    colnames(sizeShiftTable) <- c("Lineages of size", "No. of lineages", 
+                                  "Importation lag (mean ± SD)", "Importation lag (median and IQR)", 
+                                  "Detection lag (mean ± SD)",   "Detection lag (median and IQR)")
+    capSizeShifts            <- "Estimated importation lags for UK transmission lineages of different sizes. Importation lag is the waiting time between importation date and the TMRCA of the sampled genomes in the transmission lineage. Detection lag is the waiting time from the importation date to the sampling time of the oldest (first) sampled genome in the transmission lineage."
+    
+    kable(sizeShiftTable, row.names=FALSE, caption = capSizeShifts)
+    cat(knitr::kable(sizeShiftTable, row.names=FALSE, caption = capSizeShifts, format="latex"), file = paste0(figpath, "shift-size-distribution.tex"))
+    cat(knitr::kable(sizeShiftTable, row.names=FALSE, caption = capSizeShifts, format="html"),  file = paste0(figpath, "shift-size-distribution.html"))
+    write.csv(sizeShiftTable, file = paste0(figpath, "shift-size-distribution.csv"), row.names=FALSE, quote=FALSE)
+
+    getMeanSDText <- function(x) {
+        if (length(x) > 1) {
+            paste0(round(mean(x),2), " ± ", round(sd(x),2))
+        } else 
+        if (length(x) > 0) {
+            round(x,2)
+        } else {
+            "-"
+        }
+    }
+    
+    getMedianIQRText <- function(x) {
+        if (length(x) > 1) {
+            paste0(round(median(x),2), " [", paste(round(quantile(x, c(0.25, 0.75)),2), collapse="-"), "]")
+        } else 
+        if (length(x) > 0) {
+            round(x,2)
+        } else {
+            "-"
+        }
+    }
+    
+    cat("\n\\clearpage\n")
+    
+    weekShiftTable <- data.frame(week = names(weekShifts), 
+                                 epiweek  = date_epiweek(weekBreaks[1:(length(weekBreaks)-1)]),
+                                 lineages = sapply(weekShifts, length), 
+                                 #seqs     = sapply(weekSizes, getMeanSDText),
+                                 seqs     = sapply(weekSizes, getMedianIQRText),
+                                 shifts   = sapply(weekShifts, getMeanSDText),
+                                 lags     = sapply(weekLags,   getMeanSDText))
+                                 #medIQR   = sapply(weekShifts, function(x) {
+                                  #                  if (length(x) > 0) {
+                                  #                      paste0(round(median(x),2), " [", paste(round(quantile(x, c(0.25, 0.75)),2), collapse=", "), "]")
+                                  #                  } else {
+                                  #                      "-"
+                                  #                  }}))
+                                 
+    colnames(weekShiftTable) <- c("Week starting", "Epi-week", "Estimated no. of importations", 
+                                  "Lineage sizes (median and IQR)", "Importation lag (mean ± SD)", "Detection lag (mean ± SD)")
+    capWeekShifts            <- "3. Estimated importation and detection lags for UK transmission lineages ordered by importation date and aggregated by epi-week. Importation lag is the waiting time between importation date and the TMRCA of the sampled genomes in the transmission lineage. Detection lag is the waiting time from the importation date to the sampling time of the oldest (first) sampled genome in the transmission lineage. All statistics show means and standard deviations computed from the MCC trees."
+    
+    kable(weekShiftTable, row.names=FALSE, caption = capWeekShifts)
+    cat(knitr::kable(weekShiftTable, row.names=FALSE, caption = capWeekShifts, format="latex"), file = paste0(figpath, "shift-week-distribution.tex"))
+    cat(knitr::kable(weekShiftTable, row.names=FALSE, caption = capWeekShifts, format="html"),  file = paste0(figpath, "shift-week-distribution.html"))
+    write.csv(weekShiftTable, file = paste0(figpath, "shift-week-distribution.csv"), row.names=FALSE, quote=FALSE)
+
+
+```
+
+```{r importation-distribution-weekly, fig.width=7, fig.height=5, fig.cap="Boxplots of the estimated importation lags for UK transmission lineages ordered by importation date and aggregated by epi-week."}
+
+    par(mar=c(5,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+    plotStats(weekShifts, ylim=c(0,20), names=names(weekShifts), ylab="Importation lag", las=2, ny=16, xlab="TMRCAs for week starting on")
+
+```
+
+```{r detection-distribution-weekly, fig.width=7, fig.height=5, fig.cap="Boxplots of the estimated detection lags for UK transmission lineages ordered by importation date and aggregated by epi-week."}
+
+    par(mar=c(5,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+    plotStats(weekLags, ylim=c(0,40), names=names(weekLags), ylab="Detection lag", las=2, ny=16, xlab="TMRCAs for week starting on")
+
+```
+
+
+
+```{r tmrca-shift-comparison, fig.width=5, fig.height=3, fig.cap="Estimated importation intensity (EII) curve (black) and the histogram of lineage TMRCAs (grey) and shifted TMRCAs representing importaitons (red). Arrow here shows the start of the UK lockdown."}
+
+    tmrca_hist         <- hist(clusterStatsMCC$tmrca_calendar, breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    tmrca_hist_shifted <- hist(clusterStatsMCC$tmrca_shifted_calendar, breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    
+    plotEnd <- endDate
+    
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+    
+    dateFreqDistribution(tmrca_hist$counts, tmrcaBreaks, plot.ci=FALSE, side=4, ylab="", 
+                         startDate = startDate, endDate = plotEnd, col=mPal(ukPal$oth), ymax=70)
+    
+    dateFreqDistribution(tmrca_hist_shifted$counts, tmrcaBreaks, plot.ci=FALSE, add=TRUE, 
+                         startDate = startDate, endDate = plotEnd, col=mPal(ukPal$eng, 0.25), ymax=70)
+    
+    mtext(side=4, text="Frequency of TMRCAs\n(per day)", line=3, cex=par("cex.lab"))
+
+    par(new=TRUE)
+    ymax <- 1200
+    plot(1, type='n', xlim=c(startDate, plotEnd), ylim=c(0,ymax), axes=FALSE, 
+         xaxs='i', yaxs='i', xlab="", ylab="")
+    lines(eii$date[eii$location == "all"], eii$num_intros[eii$location == "all"], lwd=2)
+    axis(2, las=1)
+    mtext(side=2, text="Estimated importation intensity\n(solid line)", line=3, cex=par("cex.lab"))
+    
+    
+    # Mark lockdown    
+    points(x=travelDates$lockdown, y=0.1*ymax, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+```
+    
+        
+```{r tmrca-shift-comparison-sizes, fig.width=7, fig.height=6, fig.cap="(A) Histogram of lineage TMRCAs, coloured by lineage size. (B) Histogram of lineage importations, coloured by lineage size.", eval=TRUE}
+
+    layout(matrix(1:2, nrow=2, byrow=TRUE))
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, cex.main=1.5, mgp=c(3,0.75,0))
+
+    tmrcaStat <- c("tmrca_calendar", "tmrca_shifted_calendar")
+    plotEnd <- as.Date("2020-06-21")
+    ylabs <- c("Frequency of TMRCAs\n(per day)", "Frequency of importations\n(per day)")
+    
+    for (i in 1:length(tmrcaStat)) {
+
+        tmrca_hist_small <- hist(clusterStatsMCC[clusterStatsMCC$seqs <= 10, tmrcaStat[i]], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+        tmrca_hist_med   <- hist(clusterStatsMCC[clusterStatsMCC$seqs > 10  & clusterStatsMCC$seqs <= 100, tmrcaStat[i]], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+        tmrca_hist_big   <- hist(clusterStatsMCC[clusterStatsMCC$seqs > 100 & clusterStatsMCC$seqs <= 1000, tmrcaStat[i]], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+        tmrca_hist_huge  <- hist(clusterStatsMCC[clusterStatsMCC$seqs > 1000, tmrcaStat[i]], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+        
+        # Stacked barplot
+        tmrca_hist_breakdown <- data.frame(huge  = tmrca_hist_huge$counts,
+                                           big   = tmrca_hist_big$counts,
+                                           med   = tmrca_hist_med$counts,
+                                           small = tmrca_hist_small$counts)
+        dateFreqDistribution(t(tmrca_hist_breakdown), tmrcaBreaks, plot.ci=FALSE, barplot=TRUE, label=LETTERS[i], ylab=ylabs[i],
+                             startDate = startDate, endDate = plotEnd, col=mPal(unlist(ukPal), 0.75), border=mPal(unlist(ukPal)), ymax=70)
+        
+        
+        legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=2,
+               fill=mPal(unlist(ukPal, 0.75)), border = mPal(unlist(ukPal)), 
+               legend = c("Bigger than 1000", "101 to 1000", "11 to 100", "10 or smaller"), title = "Transmission lineage size",
+               cex=0.8)
+        
+    }
+    
+```
+
+
+
+\clearpage
+
+# Import breakdown
+
+```{r import-proportion-data}
+
+    getImportsByDate <- function(eii, countryList, tmrca_hist_shifted, breaks) {
+
+        # Proportion of imports on any day attributable to a country
+        importProp <- data.frame(date = sort(unique(eii$date)))
+        for (country in countryList) {
+            # Have to make very sure date order is correct
+            importProp[[country]] <- sapply(importProp$date, function(x) eii$num_intros[eii$location == country & eii$date == x] / 
+                                                                         eii$num_intros[eii$location == "all" & eii$date == x])
+        }
+        importDates      <- importProp$date
+        importProp$all   <- NULL
+        importProp$date  <- NULL
+        rownames(importProp) <- format.Date(importDates)
+        
+        z <- importProp$Other
+        importProp$Other <- NULL
+        importProp$Other <- rep(1, nrow(importProp)) - rowSums(importProp)
+        
+        # Count of imports from each country (using shifted TMRCA distribution)
+        # Not absolute count, can have fractions of importations!
+        start <- which(breaks == min(importDates))
+        end   <- which(breaks == max(importDates))
+        importCount <- apply(importProp, 2, function(x) x * tmrca_hist_shifted$counts[start:end])
+    
+        # Need to add one date so the props and counts act like a histogram (dates delimit breaks)
+        importDates <- c(importDates, importDates[length(importDates)] + (importDates[length(importDates)] - importDates[length(importDates)-1]))
+        
+        return(list(importDates = importDates, importProp = importProp, importCount = importCount))
+    }
+
+    importsAll <- getImportsByDate(eii, levels(eii$location), tmrca_hist_shifted, tmrcaBreaks)
+    importsSub <- getImportsByDate(eii, plotList, tmrca_hist_shifted, tmrcaBreaks)
+
+```
+    
+  
+```{r totalCountsTable, cache=TRUE}
+
+    # Sort and aggregate top 40 on MCC tree
+    totalCounts <- colSums(importsAll$importCount) %>% sort(decreasing=TRUE)
+    idx <- which(names(totalCounts) == "Other")
+    totalCounts <- totalCounts[c(1:(idx-1), (idx+1):41, idx)]    
+    
+    # Get statistics across all posterior trees for the same 40 countries
+    nreps  <- nrow(lagmodel)
+    failed <- 0
+    countryOrder <- names(totalCounts)
+    totalCountsReps <- c()
+    
+    tic(paste0("\n\nNumbers of importations across ", nreps, " posterior trees: "))
+    for (i in 1:nreps) {
+      
+        if (lagmodel$exit_code[i] == 1) {
+            clusterStatsTemp <- clusterStats[clusterStats$tree == i, ]
+            clusterStatsTemp$shift <- lagmodel$alpha[i] + lagmodel$beta[i]/clusterStatsTemp$seqs
+            clusterStatsTemp$tmrca_shifted <- clusterStatsTemp$tmrca - (clusterStatsTemp$shift/366)
+            clusterStatsTemp$tmrca_shifted_calendar <- as.Date(round_date(date_decimal(clusterStatsTemp$tmrca_shifted), unit = "day"))
+            clusterStatsTemp$detection_lag <- as.Date(round_date(date_decimal(clusterStatsTemp$oldest), unit = "day")) - clusterStatsTemp$tmrca_shifted_calendar
+            
+            importHistTemp <- hist(clusterStatsTemp$tmrca_shifted_calendar, breaks=tmrcaBreaks, plot=FALSE, right=FALSE)  
+            importsTemp    <- getImportsByDate(eii, levels(eii$location), importHistTemp, tmrcaBreaks)
+            
+            # Sort and aggregate top 40
+            totalCountsTemp <- colSums(importsTemp$importCount) 
+            totalCountsReps <- cbind(totalCountsReps, totalCountsTemp[countryOrder])
+        } else {
+            failed <- failed + 1
+        }
+    }
+    totalPercReps <- apply(totalCountsReps, 2, function(x) 100*x/sum(x))
+    toc()
+    
+    
+    
+    getHPDText <- function(x, digits=3) {
+        res <- round(getHPD.boa(x), digits)
+        return(paste0(res[2], " [",res[1],"-",res[3],"]"))
+    }
+    
+    
+    
+    totalCountsTable <- data.frame(importsMCC        = round(totalCounts,2), 
+                                   importsHPD        = apply(totalCountsReps, 1, getHPDText, digits=2),
+                                   #importsMeanSD    = apply(totalCountsReps, 1, getMeanSDText), 
+                                   #importsMedIQR    = apply(totalCountsReps, 1, function(x) paste0(round(median(x),2), " [", paste(round(quantile(x, c(0.25, 0.75)),2), collapse="-"), "]")), 
+                                   percentageMCC     = round(100*totalCounts/sum(totalCounts), 3), 
+                                   percentageHPD     = apply(totalPercReps, 1, getHPDText))
+                                   #percentageMeanSD = apply(totalPercReps, 1, getMeanSDText), 
+                                   #percentageMedIQR = apply(totalPercReps, 1, function(x) paste0(round(median(x),2), " [", paste(round(quantile(x, c(0.25, 0.75)),2), collapse="-"), "]")))
+
+    colnames(totalCountsTable) <- c("Observed importations (MCC tree)", 
+                                    "Observed importations (median, 95% HPD)", 
+                                    "Percentage (MCC tree)", 
+                                    "Percentage (median, 95% HPD)")
+    capTotalCounts <- paste0("Number of observed importations in our dataset and the percentage of the total that can be attributed to the 40 countries inferred to be sources for the most importations on the MCC tree and across a set of ", nreps-failed, " posterior trees (the optimisation procedure failed to converge on ", failed, " posterior trees).")
+
+    
+    rownames(totalCountsTable) <- sub("Korea, South", "South Korea", rownames(totalCountsTable))
+    kable(totalCountsTable, caption=capTotalCounts)
+    cat(knitr::kable(totalCountsTable, caption = capTotalCounts, format="latex"), file = paste0(figpath, "import-counts.tex"))
+    cat(knitr::kable(totalCountsTable, caption = capTotalCounts, format="html"),  file = paste0(figpath, "import-counts.html"))
+    write.csv(totalCountsTable, file = paste0(figpath, "import-counts.csv"), row.names=TRUE, quote=FALSE)
+
+    
+```
+
+```{r import-proportions, fig.width=7, fig.height=3, fig.cap="The estimated proportion of importation events that are attributable to inbound travellers from each of several source countries over time.", eval=TRUE}
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8)
+
+    dateFreqDistribution(t(importsSub$importProp), importsSub$importDates, plot.ci=FALSE,  barplot=FALSE, 
+                         startDate = startDate, endDate = endDate, 
+                         col=sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]], 0.75)), border = "#000000",
+                         ymax = 1, ylab = "Proportion of samples")
+    rect(startDate, 0, endDate, 1, xpd=TRUE)
+    
+    legend("top", horiz=FALSE, inset=c(0,-0.35), bty='n', xpd=TRUE, ncol=5,
+           fill=unname(sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]], 0.75))), 
+           legend <- colnames(importsSub$importProp), cex=0.8)
+
+```
+
+
+```{r import-hist, fig.width=9.5, fig.height=4, fig.cap="Estimated histogram of virus lineage importation events per day, obtained from our lag model. Colours show the proportion attributable each day to inbound travel from various countries. This assignment is statistical, i.e. we cannot ascribe a specific source location to any given lineage."}
+
+    par(mar=c(4,6,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    dateFreqDistribution(t(importsSub$importCount), importsSub$importDates, plot.ci=FALSE,  barplot=TRUE, 
+                         startDate = startDate, endDate = endDate, 
+                         col=sapply(colnames(importsSub$importCount), function(x) mPal(countryPal[[x]], 0.75)), 
+                         border = sapply(colnames(importsSub$importCount), function(x) mPal(countryPal[[x]])),
+                         ymax = 70, ylab = "Importation events leading to an\nobserved transmission lineage")
+    
+    legend("topleft", horiz=FALSE, inset=c(1,0), bty='n', xpd=TRUE, ncol=1,
+           border = unname(sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]]))), 
+           fill   = unname(sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]], 0.75))), 
+           legend <- colnames(importsSub$importProp), cex=1)
+
+```
+
+```{r import-hist-extended, fig.width=9, fig.height=4, fig.cap="Estimated histogram of virus lineage importation events per day, obtained from our lag model. Colours show the proportion attributable each day to inbound travel from various countries. This assignment is statistical, i.e. we cannot ascribe a specific source location to any given lineage. **This is the same as the previous plot but the axes have been extended. Lineages with TMRCAs after 30 April are not plotted, since data on inbound travellers after 30 April are not available.**"}
+
+    par(mar=c(4,6,2.5,7), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    # Extend with zeros to plot on same axes as TMRCAs (need post-processing, since unassigned TMRCAs > Apr 30 are NOT plotted)
+    tempImportDates  <- c(importsSub$importDates, seq(max(importsSub$importDates+1), as.Date("2020-07-01"), by="days"))
+    tempImportCounts <- rbind(importsSub$importCount, matrix(nrow=(length(tempImportDates)-nrow(importsSub$importCount)-1), ncol=ncol(importsSub$importCount)))
+    
+
+    dateFreqDistribution(t(tempImportCounts), tempImportDates, plot.ci=FALSE,  barplot=TRUE, 
+                         startDate = startDate, endDate = "2020-06-21", 
+                         col=sapply(colnames(importsSub$importCount), function(x) mPal(countryPal[[x]], 0.75)), 
+                         border = sapply(colnames(importsSub$importCount), function(x) mPal(countryPal[[x]])),
+                         ymax = 70, ylab = "Importation events leading to an\nobserved transmission lineage")
+    
+    legend("topleft", horiz=FALSE, inset=c(1,0), bty='n', xpd=TRUE, ncol=1,
+           border = unname(sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]]))), 
+           fill   = unname(sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]], 0.75))), 
+           legend <- colnames(importsSub$importProp), cex=1)
+
+```
+
+
+
+
+```{r import-hist-cumulative, fig.width=5, fig.height=3, fig.cap="Estimated cumulative number of virus lineage importation events per day, obtained from our lag model. Colours show the proportion attributable each day to inbound travel from various countries. This assignment is statistical, i.e. we cannot ascribe a specific source location to any given lineage. The black line shows the cumulative global EII curve. **This plot is to check the fit of the importation distribution to the EII curve by eye.**"}
+
+    par(mar=c(4,5,2.5,6), cex.axis=0.7, cex.lab=0.8)
+
+    heights <- t(apply(importsSub$importCount, 2, cumsum))
+
+    dateFreqDistribution(heights, importsSub$importDates, plot.ci=FALSE,  barplot=FALSE, 
+                         startDate = startDate, endDate = endDate, 
+                         col=sapply(colnames(importsSub$importCount), function(x) mPal(countryPal[[x]], 0.75)), border = NA,
+                         ymax = max(colSums(heights))*1.1, ylab = "Importation events leading to an\nobserved transmission lineage")
+    
+    legend("top", horiz=FALSE, inset=c(0,-0.35), bty='n', xpd=TRUE, ncol=4,
+           border = unname(sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]]))), 
+           fill   = unname(sapply(colnames(importsSub$importProp), function(x) mPal(countryPal[[x]], 0.75))), 
+           legend <- colnames(importsSub$importProp), cex=0.8)
+    
+    par(new=TRUE)
+    
+    y <- cumsum(eii$num_intros[eii$location == "all"])
+    
+    plot(1, type='n', xlim=as.Date(c(startDate, endDate)), ylim=c(0,max(y)*1.1), axes=FALSE, 
+         xaxs='i', yaxs='i', xlab="", ylab="")
+    lines(eii$date[eii$location == "all"], y, lwd=2)
+    axis(4, las=1)
+    mtext(side=4, text="Cumulative estimated importation intensity\n(solid line)", line=4, cex=0.8)
+
+```
+
+```{r import-proportions-total, fig.width=6, fig.height=3, fig.cap="The estimated total fraction of importation events that are attributable to inbound travellers from each country."}
+
+    # Total proportion of observed (seen a TMRCA) importations attributable to a country
+    totalProps <- colSums(importsSub$importCount)/sum(importsSub$importCount)
+    
+    par(mar=c(0,0,0,0))
+    pie(totalProps, labels=sapply(names(totalProps), function(x) paste0(x, " (", round(totalProps[x]*100, 2), "%)")), 
+        col=sapply(names(totalProps), function(x) mPal(countryPal[[x]], 0.75)), border=NA, cex=1)
+
+```
+
+
+```{r import-hist-countries, fig.width=15, fig.height=12, fig.cap="Estimated histogram of virus lineage importation events per day, obtained from our lag model, for the 12 countries estimated to have contributed the most importations (see Table 3). This assignment is statistical, i.e. we cannot ascribe a specific source location to any given lineage. **This plot is just a sanity check and isn't useful for drawing any conclusions.**"}
+
+    # Adjust margins
+    ymax1 <- list(Spain       = 30, 
+                  France      = 30, 
+                  Italy       = 30, 
+                  Belgium     = 10, 
+                  Netherlands = 10, 
+                  Ireland     = 10, 
+                  Switzerland = 10, 
+                  US          = 10,
+                  Germany     = 3,
+                  Portugal    = 1,
+                  Sweden      = 1,
+                  China       = 4) 
+
+    ymax2 <- list(Spain       = 500, 
+                  France      = 500, 
+                  Italy       = 500, 
+                  Belgium     = 140, 
+                  Netherlands = 140, 
+                  Ireland     = 140, 
+                  Switzerland = 140, 
+                  US          = 140,
+                  Germany     = 50,
+                  Portugal    = 15,
+                  Sweden      = 15,
+                  China       = 1)
+
+    par(mar=c(4,6,2.5,6), cex.axis=1, cex.lab=1.2, cex.main=1.5, mgp=c(2,0.75,0))
+
+    layout(matrix(c(1:12), nrow=4, byrow=TRUE))
+    for (country in names(ymax1)) {
+
+        dateFreqDistribution(unname(importsAll$importCount[, country]), importsAll$importDates, plot.ci=FALSE,  barplot=TRUE, 
+                             startDate = startDate, endDate = endDate, 
+                             col=mPal(countryPal[[country]], 0.75), border = NA, 
+                             ymax = ymax1[[country]], ylab = "Importation events leading to an\nobserved transmission lineage", label=LETTERS[which(names(ymax1) == country)])
+        
+        par(new=TRUE)
+        plot(1, type='n', xlim=as.Date(c(startDate, endDate)), ylim=c(0,ymax2[[country]]), axes=FALSE, 
+             xaxs='i', yaxs='i', xlab="", ylab="")
+        lines(eii$date[eii$location == country], eii$num_intros[eii$location == country], lwd=2)
+        axis(4, las=1)
+        mtext(side=4, text="Estimated importation intensity\n(solid line)", line=4, cex=0.8)
+        title(capitalise(country))
+
+    }
+
+```
+
+
+
+\clearpage
+
+# Session info
+
+```{r sessionInfo, results='markup'}
+    sessionInfo()
+```

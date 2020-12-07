@@ -1,0 +1,922 @@
+---
+title: "COVID-19 UK introductions"
+subtitle: "Transmission lineage summary"
+author: "Louis du Plessis"
+date: '`r format(Sys.time(), "Last modified: %d %b %Y")`'
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    keep_tex: false
+    fig_crop: false
+layout: page
+editor_options: 
+  chunk_output_type: inline
+params: 
+  inputpath  :  "../../../data/phylogenetic/"
+  outputpath : "../results/combined_beast_dta/"
+  logpath    : "../results/xml/dta/output/"
+  cluster_f  : "DTA"
+  startDate  : "2020-01-19"
+  endDate    : "2020-06-21"
+  device     : "pdf"
+  
+---
+
+
+```{r rsetup, include=FALSE}
+  
+    library(lubridate)
+    library(gplots)
+    library(treemap)
+    library(coda)
+    library(viridis)
+    library(beastio)
+    library(tictoc)
+    source("../scripts/palettes.R")
+    source("../scripts/plotutils.R")
+    source("../scripts/HPDBeanPlot.R")
+
+    inputpath  <- params$inputpath
+    outputpath <- params$outputpath
+    logpath    <- params$logpath
+    cluster_f  <- params$cluster_f
+    
+    startDate  <- as.Date(params$startDate)
+    endDate    <- as.Date(params$endDate)
+
+    figpath    <- paste0(outputpath, "figures/lineage_summary_figures_", params$device, "/")
+    dir.create(figpath, recursive = TRUE, showWarnings = FALSE)
+    
+    cachepath  <- paste0(outputpath, "figures/cache/lineageSummary_", params$device, "/")
+
+    knitr::opts_chunk$set(tidy=FALSE, cache=FALSE, cache.path = cachepath, 
+                          dev=params$device, fig.path=figpath, dpi=300,
+                          message=FALSE, error=TRUE, warning=TRUE, echo=FALSE)
+    
+    labelDates <- list("oldestCase" = as.Date("2020-01-30"), 
+                       "oldestSeq"  = as.Date("2020-02-03"))
+    
+    travelDates <- list(italy    = as.Date("2020-02-25"), 
+                        lockdown = as.Date("2020-03-23"))
+    
+    
+```
+
+\clearpage
+
+# Summary
+This notebook plots summary statistics and figures of the UK transmission lineages extracted from the BEAST DTA analyses.
+
+## Input
+- Metadata table (in `inputpath`).
+- Cluster statistics for MCC trees and across posterior trees as produced (in `outputpath`):
+    - `clusters_DTA.csv`
+    - `clusterSamples_DTA.csv`
+    - `clusters_DTA_MCC_0.5.csv`
+    - `clusterSamples_DTA_MCC_0.5.csv`
+- Combined `.log` file from DTA analysis (in `logpath`).
+
+## Output
+- Lineage summary figures and tables.
+- Distributions of transmission lineage sizes in the MCC trees and across posterior trees (as `.csv` files).
+
+
+
+```{r load-data, cache=TRUE}
+         
+    metadata              <- read.csv(paste0(inputpath, "metadata.csv"))
+    metadata$sample_date  <- ymd(metadata$sample_date)
+    metadata$decimal_date <- decimal_date(metadata$sample_date)    
+    metadata$taxon_label  <- metadata$sequence_name
+    #metadata$taxon_label <- gsub("/", "_", as.character(metadata$sequence_name))
+    
+    clusterStats      <- read.csv(paste0(outputpath, "clusters_", cluster_f, ".csv"))
+    clusterStatsMCC   <- read.csv(paste0(outputpath, "clusters_", cluster_f, "_MCC_0.5.csv"))
+    clusterSamples    <- read.csv(paste0(outputpath, "clusterSamples_", cluster_f, ".csv"))
+    clusterSamplesMCC <- read.csv(paste0(outputpath, "clusterSamples_", cluster_f, "_MCC_0.5.csv"))
+
+    clusterStatsMCC_75   <- read.csv(paste0(outputpath, "clusters_", cluster_f, "_MCC_0.75.csv"))
+    clusterStatsMCC_95   <- read.csv(paste0(outputpath, "clusters_", cluster_f, "_MCC_0.95.csv"))
+
+    
+    # Convert dates to POSIX dates
+    clusterStats$tmrca_calendar    <- ymd(clusterStats$tmrca_calendar)
+    clusterStatsMCC$tmrca_calendar <- ymd(clusterStatsMCC$tmrca_calendar)
+    clusterSamplesMCC$sample_date  <- ymd(clusterSamplesMCC$sample_date)
+    
+    clusterStatsMCC_75$tmrca_calendar <- ymd(clusterStatsMCC_75$tmrca_calendar)
+    clusterStatsMCC_95$tmrca_calendar <- ymd(clusterStatsMCC_95$tmrca_calendar)
+
+
+    # Lineage sampling durations
+    clusterStatsMCC$duration <- round(366*(clusterStatsMCC$mostrecent - clusterStatsMCC$oldest))
+    clusterStats$duration    <- round(366*(clusterStats$mostrecent - clusterStats$oldest))
+    
+    nreps     <- max(clusterStats$tree) 
+    nclust    <- sapply(seq_len(nreps), function(i) sum(clusterStats$tree == i))
+    nseqs     <- sapply(seq_len(nreps), function(i) sum(clusterStats$seqs[clusterStats$tree == i]))
+    nsingles  <- sapply(seq_len(nreps), function(i) sum(metadata$country == "UK") - sum(clusterStats$seqs[clusterStats$tree == i]))
+    nsmall    <- sapply(seq_len(nreps), function(i) sum(clusterStats$seqs[clusterStats$tree == i] < 10))
+    psmall    <- sapply(seq_len(nreps), function(i) sum(clusterStats$seqs[clusterStats$tree == i] < 10)/sum(clusterStats$tree == i))
+     
+    nclustHPD   <- getHPD.boa(nclust)
+    nseqsHPD    <- getHPD.boa(nseqs)
+    nsinglesHPD <- getHPD.boa(nsingles)  
+    nsmallHPD   <- getHPD.boa(nsmall)
+    psmallHPD   <- round(100*getHPD.boa(psmall),2)
+  
+       
+    # Log file statistics
+    logfiles <- list.files(path=logpath, pattern="*.log")
+    mcmc.trace <- readLog(paste0(logpath, logfiles), burnin=0)
+
+    imports <- data.frame(sapply(1:5, function(x) mcmc.trace[[x]][, "c_import.count.1."]))
+    exports <- data.frame(sapply(1:5, function(x) mcmc.trace[[x]][, "c_export.count.1."]))
+    colnames(imports) <- colnames(exports) <- gsub(logpath, "", gsub("-DTA-20200818.combined.log", "", chanames(mcmc.trace)))
+    imports$Total <- rowSums(imports)
+    exports$Total <- rowSums(exports)
+    
+    imports <- mcmc(imports)
+    exports <- mcmc(exports)
+
+```
+
+
+
+# Transmission lineage statistics
+
+## Input data
+- `r cluster_f` transmission lineages and singletons, on the dataset from 26 June, n = `r nrow(metadata)` sequences (n = `r sum(metadata$country == "UK")`, `r 100*round(sum(metadata$country == "UK")/nrow(metadata),2)`% from the UK).
+- Oldest sequence: `r min(metadata$sample_date)`
+- Newest sequence: `r max(metadata$sample_date)`
+
+## Summary statistics (2000 posterior trees)
+- TMRCAs were estimated across `r nreps` posterior trees using BEAST with a fixed clock-rate and DTA was used to identify transmission lineages and singletons. 
+- Dataset contains `r paste0(nclustHPD[2], " [", nclustHPD[1], ",", nclustHPD[3],"]")` UK transmission lineages (2 or more sequences), comprising `r paste0(nseqsHPD[2], " [", nseqsHPD[1], ",", nseqsHPD[3],"]")` sequences from the UK, as well as a further `r paste0(nsinglesHPD[2], " [", nsinglesHPD[1], ",", nsinglesHPD[3],"]")` singletons.
+- Mean and SD of the median TMRCA distributions across 2000 posterior trees: `r round_date(date_decimal(mean(clusterStats$tmrca)), unit="day")` ± `r round(sd(clusterStats$tmrca)*366,3)` days (singletons excluded).
+- Median and interquartile range of TMRCA distribution across 2000 posterior trees: `r round_date(date_decimal(median(clusterStats$tmrca)), unit="day")` [`r round_date(date_decimal(quantile(clusterStats$tmrca, c(0.25, 0.75))), unit="day")`] (singletons excluded).
+- `r paste0(nsmallHPD[2], " [", nsmallHPD[1], ",", nsmallHPD[3], "]")` small lineages (<10 sequences), making up `r paste0(psmallHPD[2], "% [", psmallHPD[1], ",", psmallHPD[3], "]")` of all transmission lineages.
+
+## Summary statistics (MCC tree)
+- Built MCC tree from 2000 posterior trees and used a threshold of 0.5 posterior probability to identify internal nodes in the UK (and identify transmission lineages).
+- Dataset contains `r length(levels(clusterStatsMCC$cluster))` UK transmission lineages (2 or more sequences), comprising `r sum(clusterStatsMCC$seqs)` sequences from the UK, as well as a further `r sum(metadata$country == "UK") - sum(clusterStatsMCC$seqs)` singletons.
+- Mean and SD of the TMRCA distribution: `r round_date(date_decimal(mean(clusterStatsMCC$tmrca)), unit="day")` ± `r round(sd(clusterStatsMCC$tmrca)*366,3)` days (singletons excluded).
+- Median and interquartile range of TMRCA distribution: `r round_date(date_decimal(median(clusterStatsMCC$tmrca)), unit="day")` [`r round_date(date_decimal(quantile(clusterStatsMCC$tmrca, c(0.25, 0.75))), unit="day")`] (singletons excluded).
+- `r sum(clusterStatsMCC$seqs < 10)` small lineages (<10 sequences), making up `r round(100*sum(clusterStatsMCC$seqs < 10)/nrow(clusterStatsMCC),2)`% of all transmission lineages.
+
+
+
+```{r imports-exports, fig.width=7, fig.height=3, fig.cap="Number of location state transitions between the binary phylogenetic traits UK/non-UK detected by the robust counting approach implemented in BEAST 1.10. Non-UK to UK=blue, UK to non-UK=red. Posterior distributions are truncated at their 95% HPD interval limits and the horizontal lines indicate median estimates."}
+
+    par(mar=c(4,4,2,1), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    maxwidth <- 0.75
+    bw       <- 5
+    n        <- ncol(imports)
+    
+    plot(1, type='n', bty='n', xlim=c(0,n+1), ylim=c(0,3500),
+         axes=FALSE, xlab='', yaxs='i', xaxs='i', ylab="Number of lineage transitions")
+    axis(2, las=1)
+    
+    abline(v = 1:n, lwd=1, lty=1)
+    abline(h = axTicks(2), lwd=0.5, lty=3)
+    
+    plotOrder <- c("Total", "A", "B", "B.1.1", "B.1.pruned", "B.1.X")
+    HPDBeanPlot(imports[, plotOrder],  side='left',  fill=mPal(ukPal$sct, 0.5), border=mPal(ukPal$sct), medcol=mPal(ukPal$sct), medwidth=0.5, 
+                bw=bw, maxwidth=maxwidth, add=TRUE, axes=FALSE, lwd=c(NA,1,NA))
+    HPDBeanPlot(exports[, plotOrder],  side='right',  fill=mPal(ukPal$eng, 0.5), border=mPal(ukPal$eng), medcol=mPal(ukPal$eng), medwidth=0.5, 
+                bw=bw, maxwidth=maxwidth, add=TRUE, axes=FALSE, lwd=c(NA,1,NA))
+    
+    
+    text(x=1:n, y=-300, plotOrder, srt=45, xpd=TRUE, cex=0.8, pos=1)
+    
+    legend("bottom", horiz=TRUE, inset=c(0,0.95), bty='n', 
+           fill=c(mPal(ukPal$sct,0.5), mPal(ukPal$eng, 0.5)), 
+           border=c(mPal(ukPal$sct), mPal(ukPal$eng)), 
+           legend=c("Non-UK to UK", "UK to non-UK"), title="Location state transitions", xpd=TRUE, cex=0.8)
+
+```
+
+```{r imports-table, cache=TRUE, eval=TRUE}
+
+    tic()
+
+    lineages    <- data.frame("Total" = sapply(seq_len(nreps), function(i) sum(clusterStats$tree == i)))
+    lineagesMCC <- data.frame("Total" = nrow(clusterStatsMCC))
+    
+    singletons    <- data.frame("Total" = sapply(seq_len(nreps), function(i) sum(metadata$country == "UK") - sum(clusterStats$seqs[clusterStats$tree == i])))
+    singletonsMCC <- data.frame("Total" = sum(metadata$country == "UK") - sum(clusterStatsMCC$seqs))
+    for (treefile in levels(clusterStats$treefile)) {
+        lin <- gsub("-DTA-20200818.combined.trees", "", treefile)
+        lineages[[lin]]  <- sapply(seq_len(nreps), function(i) sum(clusterStats$tree == i & clusterStats$treefile == treefile))
+        lineagesMCC[lin] <- sum(clusterStatsMCC$treefile == gsub("trees", "MCC.tree", treefile))
+        
+        treemeta <- read.csv(paste0(outputpath, gsub(".trees", ".MCC.metadata.csv", treefile)))
+        singletons[[lin]]    <- sapply(seq_len(nreps), function(i) sum(treemeta$country == "UK") - sum(clusterStats$seqs[clusterStats$tree == i & clusterStats$treefile == treefile]))
+        singletonsMCC[[lin]] <- sum(treemeta$country == "UK") - sum(clusterStatsMCC$seqs[clusterStatsMCC$treefile == gsub("trees", "MCC.tree", treefile)])
+    }
+    
+    toc()
+    
+    
+    importCountHPD  <- getHPDMedian(imports)
+    exportCounthPD  <- getHPDMedian(exports)
+    lineageCountHPD <- getHPDMedian(mcmc(lineages + singletons))
+    
+    
+    importTable <- data.frame(importCount     = importCountHPD[plotOrder, "med"],
+                              importCountHPD  = paste0("[", importCountHPD[plotOrder, "lower"], "-", importCountHPD[plotOrder, "upper"], "]"),
+                              exportCount     = exportCounthPD[plotOrder, "med"],
+                              exportCountHPD  = paste0("[", exportCounthPD[plotOrder, "lower"], "-", exportCounthPD[plotOrder, "upper"], "]"),
+                              lineageCount    = lineageCountHPD[plotOrder, "med"], 
+                              lineageCountHPD = paste0("[", lineageCountHPD[plotOrder, "lower"], "-", lineageCountHPD[plotOrder, "upper"], "]"),
+                              lineageCountMCC = t(lineagesMCC[plotOrder] + singletonsMCC[plotOrder]))
+    
+    colnames(importTable) <- c("Non-UK to UK state transitions (median and 95% HPD)", "", 
+                               "UK to non-UK state transitions (median and 95% HPD)", "", 
+                               "Transmission lineages and singletons (median and 95% HPD)", "",
+                               "Transmission lineages and singletons in MCC tree")
+    
+    knitr::kable(importTable, caption = "The number of location state transitions (non-UK to UK and vice-versa) taken across the set of 2000 posterior trees, as well as the total number of transmission lineages and singletons inferred across the set of 2000 posterior trees and the MCC trees. Numbers are given for the whole dataset and for each individual subtree.")
+    cat(knitr::kable(importTable, format="latex"), file = paste0(figpath, "imports-table.tex"))
+    cat(knitr::kable(importTable, format="html"), file = paste0(figpath, "imports-table.html"))
+    write.csv(importTable, file = paste0(figpath, "imports-table.csv"), row.names=TRUE, quote=FALSE)
+
+
+```
+
+
+```{r lineage-treemap, fig.width=5, fig.height=2.8, fig.cap="Partition of 26,181 UK genomes into UK transmission lineages and singletons, coloured by duration of lineage detection (time between the lineage’s oldest and most recent genomes). (Transmission lineages from the MCC trees)."}
+
+    # Add singletons to transmission lineages
+    allClusters <- table(clusterSamplesMCC$cluster)
+    singletons  <- names(allClusters[allClusters == 1])
+    
+    clustersAndSingletons <- data.frame(cluster  = c(clusterStatsMCC$cluster,  singletons), 
+                                        seqs     = c(clusterStatsMCC$seqs,     rep(1, length(singletons))), 
+                                        duration = c(clusterStatsMCC$duration, rep(0, length(singletons))))
+
+
+    # Palette for sampling duration
+    gradPal <- gray.colors(n = 140, start = 0.9, end=0.4)
+
+    treemap(clustersAndSingletons, index=c("cluster"), vSize = "seqs", vColor = "duration", type="manual", palette = gradPal, range = c(0, 140),
+            title = "", title.legend = "Transmission lineage duration (days)", 
+            fontsize.labels = 0, border.lwds = 0.5, cex=1, fontsize.legend=10, position.legend = "bottom")
+    
+```    
+    
+    
+```{r lineage-treemap-legend, fig.width=7, fig.height=3, include=FALSE}    
+
+      par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+      oldpar <- par(no.readonly = TRUE)
+      par(mar=rep(0.05, 4), new=FALSE, fig=c(0.93, 0.95, 0.3, 0.6), mgp=c(3,0.25,0))
+      
+      plot(1, type='n', xlim=c(0,1), ylim=c(0, length(gradPal)), xaxs='i', yaxs='i', axes=FALSE, bty='n', xlab="", ylab="")
+      
+      for (i in 1:(length(gradPal))) {
+        rect(0, i-1, 1, i, col=gradPal[i], border = NA)
+      }
+      rect(0, 0, 1, length(gradPal), xpd=TRUE)
+      
+      yticks <- pretty(1:length(gradPal))
+      legendTicks <- yticks 
+
+      
+      axis(4, at=yticks, labels = legendTicks, lwd=0, lwd.ticks = 1, las=1, tcl=-0.1, cex=par("cex.axis"))
+      mtext(side=2, line=0.1, "Duration of transmission\nlineage detection (days)", cex=par("cex.lab"))
+      
+      par(oldpar)
+```
+
+
+```{r lineage-sizes-data, cache=TRUE}
+       
+    # Data for lineage sizes (also save csvs)
+    
+    # Size frequency distribution (small lineages)
+    n <- 29
+
+    # Size frequency distribution (all lineages)  
+    sizeBreaks  <- 1:max(clusterStats$seqs)
+    sizeFreqDist <- sapply(seq_len(nreps), function(x) {
+        hist(clusterStats$seqs[clusterStats$tree == x], breaks=sizeBreaks, plot=FALSE)$counts
+    })
+    sizeFreqDistHPD <- getMatrixHPD.boa(t(rbind(sizeFreqDist[1:n, ], colSums(sizeFreqDist[(n+1):nrow(sizeFreqDist), ]))), dataframe=FALSE)
+    colnames(sizeFreqDistHPD) <- c(2:ncol(sizeFreqDistHPD), paste0(">",n+1))
+    
+    # Cumulative frequency distribution (all lineages)
+    cumFreqDist <- apply(sizeFreqDist, 2, function(x) rev(cumsum(rev(x))))
+    cumFreqDistHPD <- getMatrixHPD.boa(t(cumFreqDist), dataframe=FALSE)
+    cumFreqDistHPD[cumFreqDistHPD == 0] <- 1e-10
+    
+    # Size frequency distribution and cumulative distribution (MCC tree, all lineages)
+    sizeFreqDistMCC <- hist(clusterStatsMCC$seqs, breaks=sizeBreaks, plot=FALSE)$counts
+    cumFreqDistMCC  <- rev(cumsum(rev(sizeFreqDistMCC)))
+    
+    # Save csv files
+    sizeFreqDistAll <- cbind(sizeBreaks, rbind(nsingles, sizeFreqDist))
+    colnames(sizeFreqDistAll) <- c("seqs", paste0("tree", 1:nreps))
+    write.csv(sizeFreqDistAll, paste0(outputpath, "clusterSizes_", cluster_f, ".csv"), row.names=FALSE)
+    
+    sizeFreqDistMCCAll <- c(sum(metadata$country == "UK") - sum(clusterStatsMCC$seqs), sizeFreqDistMCC)
+    write.csv(data.frame(seqs = sizeBreaks, lineages=sizeFreqDistMCCAll), paste0(outputpath, "clusterSizes_", cluster_f, "_MCC.csv"), row.names=FALSE)
+    
+    
+    
+    # For lineage rank plot
+    maxn  <- max(nclust + nsingles)
+    lineageSizes <- sapply(seq_len(nreps), function(i) sort(unname(table(clusterSamples[, i+1])), decreasing=TRUE))
+    lineageSizes <- sapply(lineageSizes, function(x) c(x, rep(1e-10, maxn - length(x))))
+    #lineageSizes <- matrix(unlist(lineageSizes), nrow=nreps, byrow=TRUE)
+    
+    lineageSizesMCC <- c(sort(unname(table(clusterSamplesMCC$cluster)), decreasing = TRUE), 
+                         rep(1e-10, maxn-length(levels(clusterSamplesMCC$cluster))))
+    
+    
+    sizeHPD    <- getMatrixHPD.boa(t(lineageSizes), dataframe = FALSE)
+    
+    cumProps   <- t(apply(lineageSizes, 2, cumsum)/sum(lineageSizes[,1]))
+    cumPropHPD <- cbind(c(0,0,0), getMatrixHPD.boa(cumProps, dataframe=FALSE))
+    cumPropMCC <- c(0, cumsum(lineageSizesMCC)/sum(lineageSizesMCC))
+    
+```
+
+
+```{r lineage-sizes, fig.width=7, fig.height=3, fig.cap="Distribution of UK transmission lineage sizes (MCC trees). Blue bars show the number of transmission lineages of each size (red bars=95% HPD of these sizes across the posterior tree distribution). Inset: the corresponding complementary cumulative frequency distribution of lineage size (blue line), on double logarithmic axes (red shading=95% HPD of this distribution across the posterior tree distribution). Values either side of vertical dashed line show coefficients of power-law distributions (P[X >= x] ~ x^alpha)) fitted to lineages containing <=50 (alpha1) and >50 (alpha2) virus genomes, respectively."}
+
+    ymax <- 400
+    
+    # Frequency spectrum for small lineages (MCC tree, CIs are HPDs across posterior)
+    par(mar=c(3,6,2,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0), fig=c(0,1,0,1))
+
+    barplot2(c(sizeFreqDistMCC[1:n], sum(sizeFreqDistMCC[(n+1):length(sizeFreqDistMCC)])), names.arg = colnames(sizeFreqDistHPD), 
+             plot.ci = TRUE, ci.color = mPal(ukPal$eng), ci.l = sizeFreqDistHPD[1, ], ci.u = sizeFreqDistHPD[3, ], 
+             col=c(rep(mPal(ukPal$sct, 0.5),n), mPal(ukPal$oth, 0.5)), 
+             border=c(rep(mPal(ukPal$sct),n), mPal(ukPal$oth)), 
+             cex.names = 0.7, las=2, ylim=c(0,ymax), width=0.8, space=0.25, xpd=FALSE, 
+             ylab="No. of transmission lineagges")
+    #text(x = 1:(n+1)-0.4, y = -0.05*ymax, labels = colnames(sizeFreqDistHPD), cex=par("cex.axis"), srt=45, xpd=TRUE)
+    
+    # Median values in posterior
+    # points(1:(n+1)-0.4, sizeFreqDistHPD[2, ], pch=20, cex=0.8, col=mPal(ukPal$eng))
+    
+    heights <- sizeFreqDistHPD[3,]+0.12*ymax
+    heights[heights > ymax] <- ymax*1.04
+    #text(x = (1:(n+1))-0.2, y=heights, labels = paste0(sizeFreqDistHPD[2, ], " [", sizeFreqDistHPD[1, ], ", ", sizeFreqDistHPD[3, ], "]"), 
+    #     col=dark$red, pos=3, srt=90, cex=0.7, xpd=TRUE)
+    mtext(side=1, text="Transmission lineage size", line=2, cex=0.8)
+    
+    
+    # Cumulative frequency distribution for all lineages (log-log plot)
+    xlims <- c(1,3E3)
+    ylims <- c(1,2E3)
+    par(mar=c(5,5,1,1), cex.axis=0.7, mgp=c(1.5,0.5,0), fig=c(0.3, 0.75, 0.1, 0.95), new=TRUE)
+    plot(1, type='n', ylim=ylims, xlim=xlims, log='xy', las=1, xaxs='i', yaxs='i',
+         ylab = "No. of transmission lineages\nof at least size", xlab="Transmission lineage size", axes=FALSE)
+    rect(xlims[1], ylims[1], xlims[2], ylims[2], xpd=TRUE)
+    plotLogAxis(lims = xlims, side=1, las=1)
+    plotLogAxis(lims = ylims, side=2, las=1)
+    
+    # 95% HPD
+    polygon(c(sizeBreaks[2:length(sizeBreaks)], rev(sizeBreaks[2:length(sizeBreaks)])), 
+            c(cumFreqDistHPD[3,], rev(cumFreqDistHPD[1,])), border=NA, col=mPal(ukPal$eng, 0.5))
+    
+    # Median 
+    #lines(sizeBreaks[2:length(sizeBreaks)], cumFreqDistHPD[2,], col=mPal(ukPal$eng))
+    
+    # MCC tree clustering
+    lines(sizeBreaks[2:length(sizeBreaks)], cumFreqDistMCC, col=mPal(ukPal$sct), lty=1)
+    
+    abline(v = 50, col=mPal(dark$black, 0.5), lty=2)
+    
+    # Linear model 1: lineages of size 2-50
+    start <- 2
+    end   <- 50
+    
+    y <- cumFreqDistMCC[start:end-1]
+    freqLM1 <- lm(log(cumFreqDistMCC[start:end-1]) ~ log(sizeBreaks[start:end]))
+    
+    x <- 1:50
+    k1     <- freqLM1$coefficients[1]
+    alpha1 <- freqLM1$coefficients[2]
+    #lines(x, exp(k1+1)*x^alpha1, col=mPal(dark$black, 0.5), lty=2)
+    
+    # Linear model 2: lineages of size 51-max
+    start <- 51
+    end   <- max(clusterStatsMCC$seqs)
+    
+    y <- cumFreqDistMCC[start:end-1]
+    freqLM2 <- lm(log(cumFreqDistMCC[start:end-1]) ~ log(sizeBreaks[start:end]))
+    
+    x     <- 51:5000
+    k2     <- freqLM2$coefficients[1]
+    alpha2 <- freqLM2$coefficients[2]
+    #lines(x, exp(k2-1)*x^alpha2, col=mPal(dark$black, 0.5), lty=2)
+    
+    text(x = 70, y=1000, labels = substitute(alpha[1]~"="~x, list(x = round(-alpha1,2))), cex=0.8, pos=2)
+    text(x = 35, y=1.5, labels = substitute(alpha[2]~"="~x, list(x = round(-alpha2,2))), cex=0.8, pos=4)
+    
+    #text(x = 250, y=1000, labels = substitute(alpha[1]~"="~x, list(x = round(-alpha1,2))), cex=0.8, pos=2)
+    #text(x = 15, y=1.5, labels = substitute(alpha[2]~"="~x, list(x = round(-alpha2,2))), cex=0.8, pos=4)
+    
+```
+
+
+
+```{r lineage-rank, fig.width=4, fig.height=4, fig.cap="The percentage of UK genomes contained in transmission lineages, when ranked from biggest to smallest. The blue line and shading shows respectively the percentage of genomes in transmission lineages on the MCC trees and across the posterior tree distribution, respectively. The corresponding size of transmission lineages is shown in red on a logarithmic axis. The black dashed line and yellow shading show the 20% biggest transmission lineages on the MCC trees and across the posterior tree distribution, respectively."}
+
+    xlim <- c(0, max(nclustHPD))
+    
+    par(mar=c(4,3,3,3), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    plot(1, type='n', xlim=xlim, ylim=c(0,1), yaxs='i', las=1, axes=FALSE, 
+         ylab="Percentage of UK genomes", xlab="")
+    
+    grid(col = mPal(ukPal$oth), lwd=0.5, ny=20, nx=0, lty=3)
+    grid(col = mPal(dark$black), lwd=0.5, ny=4, nx=NULL, lty=3)
+    
+    
+    par(new=TRUE)
+    plot(1, type='n', xlim=xlim, ylim=c(1,1E4), log='y', axes=FALSE, yaxs='i', 
+         xlab="", ylab="")
+    polygon(c(1:maxn, maxn:1), 
+            c(sizeHPD[3,], rev(sizeHPD[1,])), border=NA, col=mPal(ukPal$eng, 0.5))
+    #lines(1:maxn, sizeHPD[2,], col=mPal(ukPal$sct))
+    lines(1:maxn, lineageSizesMCC, col=mPal(ukPal$eng), lty=1)
+    #axis(4, las=1)
+    plotLogAxis(lims=c(1,1E4), side=4)
+    axis(1, at = c(-200, 1, seq(200, 1400, by = 200)), labels=c("", "1", "", "400", "", "800", "", "1200", ""))
+    mtext(side = 4, text = "Transmission lineage size", line=2, cex=par("cex.lab"))
+    mtext(side = 1, text = "Transmission lineage rank\n(biggest to smallest)", line=2.5, cex=par("cex.lab"))
+    
+    par(new=TRUE)
+    plot(1, type='n', xlim=xlim, ylim=c(0,1), yaxs='i', las=1, axes=FALSE, xlab="", ylab="")
+    
+    polygon(c(0:maxn, maxn:0), 
+            c(cumPropHPD[3,], rev(cumPropHPD[1,])), border=NA, col=mPal(ukPal$sct, 0.5))
+    #lines(0:maxn, cumPropHPD[2,], col=mPal(ukPal$sct))
+    lines(0:maxn, cumPropMCC, col=mPal(ukPal$sct), lty=1)
+    axis(2, at=c(0, 0.25, 0.5, 0.75, 1), labels=c(0, 25, 50, 75, 100), las=1)
+    
+    rect(0.2*nclustHPD[1], 0, 0.2*nclustHPD[3], 1, col=mPal(ukPal$wls, 0.75), border=NA)
+    #abline(v = 0.2*nclustHPD[2], lty=2, col=mPal(ukPal$eng))
+    abline(v = 0.2*length(levels(clusterStatsMCC$cluster)), lty=2, col="#000000")
+    text(x = 0.2*length(levels(clusterStatsMCC$cluster)), y = 1.12, labels = "20%", cex=1, xpd=TRUE, pos=1, srt=45)
+
+```
+
+- The 20% biggest transmission lineages contain `r round(100*cumPropHPD[2, ceiling(0.2*nclustHPD[2])], 2)` [`r paste(round(100*cumPropHPD[1, ceiling(0.2*nclustHPD[1])],2 ), round(100*cumPropHPD[3, ceiling(0.2*nclustHPD[3])],2 ), sep=", ")`] of all UK genomes (across all 2000 posterior trees)
+- The 20% biggest transmission lineages contain `r round(100*cumPropMCC[ceiling(0.2*length(levels(clusterStatsMCC$cluster)))],2)`% of all UK genomes (in the MCC tree)
+- The 8 biggest transmission lineages contain  `r round(100*cumPropHPD[2,9], 2)` [`r paste0(round(100*cumPropHPD[c(1,3), 9],2 ), collapse=", ")`] of all UK genomes (across all 2000 posterior trees)
+- The 8 biggest transmission lineages contain `r round(100*cumPropMCC[9],2)`% of all UK genomes (in the MCC tree)
+
+
+```{r lineage-rank-complete, fig.width=8, fig.height=4, fig.cap="The percentage of UK genomes contained in transmission lineages, when ranked from biggest to smallest. The blue line and shading shows respectively the percentage of genomes in transmission lineages on the MCC trees and across the posterior tree distribution, respectively. The corresponding size of transmission lineages is shown in red on a logarithmic axis. The black dashed line and yellow shading show the 20% biggest transmission lineages on the MCC trees and across the posterior tree distribution, respectively."}
+
+    xlim <- c(0, ncol(sizeHPD))
+    
+    par(mar=c(4,3,3,3), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    
+    plot(1, type='n', xlim=xlim, ylim=c(0,1), yaxs='i', las=1, axes=FALSE, 
+         ylab="Percentage of UK genomes", xlab="")
+    
+    grid(col = mPal(ukPal$oth), lwd=0.5, ny=20, nx=0, lty=3)
+    grid(col = 'black', lwd=0.5, ny=4, nx=NULL, lty=3)
+    
+    
+    par(new=TRUE)
+    plot(1, type='n', xlim=xlim, ylim=c(1,10000), log='y', axes=FALSE, yaxs='i', 
+         xlab="", ylab="")
+    polygon(c(1:maxn, maxn:1), 
+            c(sizeHPD[3,], rev(sizeHPD[1,])), border=NA, col=mPal(ukPal$wls, 0.75))
+    #lines(1:maxn, sizeHPD[2,], col=mPal(ukPal$sct))
+    lines(1:maxn, lineageSizesMCC, col=mPal(ukPal$sct), lty=1)
+    axis(4, las=1)
+    axis(1, at = c(-500, 1, seq(500, 4000, by = 500)))
+    mtext(side = 4, text = "Transmission lineage size", line=2, cex=par("cex.lab"))
+    mtext(side = 1, text = "Transmission lineage rank\n(biggest to smallest)", line=2.5, cex=par("cex.lab"))
+    
+    par(new=TRUE)
+    plot(1, type='n', xlim=xlim, ylim=c(0,1), yaxs='i', las=1, axes=FALSE, xlab="", ylab="")
+    
+    polygon(c(0:maxn, maxn:0), 
+            c(cumPropHPD[3,], rev(cumPropHPD[1,])), border=NA, col=mPal(ukPal$sct, 0.5))
+    #lines(0:maxn, cumPropHPD[2,], col=mPal(ukPal$sct))
+    lines(0:maxn, cumPropMCC, col=mPal(ukPal$sct), lty=1)
+    axis(2, at=c(0, 0.25, 0.5, 0.75, 1), labels=c(0, 25, 50, 75, 100), las=1)
+    
+    rect(0.2*nclustHPD[1], 0, 0.2*nclustHPD[3], 1, col=mPal(ukPal$eng, 0.25), border=NA)
+    #abline(v = 0.2*nclustHPD[2], lty=2, col=mPal(ukPal$eng))
+    abline(v = 0.2*length(levels(clusterStatsMCC$cluster)), lty=1, col=mPal(ukPal$eng))
+    text(x = 0.2*nclustHPD[2], y = 1.1, labels = "20% of transmission\nlineages", cex=0.8, xpd=TRUE)
+
+```
+
+```{r lineage-durations, fig.width=5, fig.height=4, fig.cap="Distribution of UK transmission lineage sampling durations, aggregated by week. Blue bars show the number of transmission lineages that were observed over different durations in the MCC tree. Red bars show 95% HPD intervals for these numbers across the posterior tree distribution."}
+
+    ymax <- 400
+    
+    durationBreaks <- seq(0, 140, by=7)
+    durationFreqDist <- simplify2array(sapply(seq_len(nreps), function(x) {
+        hist(clusterStats$duration[clusterStats$tree == x], breaks=durationBreaks, plot=FALSE)$counts
+    }))
+    durationFreqDistMCC <- hist(clusterStatsMCC$duration, breaks=durationBreaks, plot=FALSE)$counts
+    durationFreqDistHPD <- as.matrix(getMatrixHPD.boa(t(durationFreqDist)))
+    
+    
+    # Frequency spectrum for small lineages (MCC tree, CIs are HPDs across posterior)
+    par(mar=c(4,6,2.5,1), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0), fig=c(0,1,0,1))
+    #par(mar=c(4,6,2.5,2), cex.axis=0.8, cex.lab=0.8, mgp=c(3,0.75,0))
+    barplot2(durationFreqDistMCC, names.arg = 1:length(durationFreqDistMCC),
+             plot.ci = TRUE, ci.color = mPal(ukPal$eng), ci.l = durationFreqDistHPD[1, ], ci.u = durationFreqDistHPD[3, ], 
+             col = mPal(ukPal$sct, 0.5), 
+             border = mPal(ukPal$sct),
+             cex.names = 0.7, las=2, ylim=c(0,ymax), width=0.8, space=0.25, xpd=FALSE, 
+             ylab="No. of transmission lineagges")
+    
+    
+    # Median values in posterior
+    # points(1:ncol(durationFreqDistHPD)-0.4, durationFreqDistHPD[2, ], pch=20, cex=0.8, col=mPal(ukPal$eng))
+    
+    heights <- durationFreqDistHPD[3,]+0.12*ymax
+    heights[heights > ymax] <- ymax*1.04
+    #text(x = (1:(n+1))-0.2, y=heights, labels = paste0(durationFreqDistHPD[2, ], " [", durationFreqDistHPD[1, ], ", ", durationFreqDistHPD[3, ], "]"), 
+    #     col=dark$red, pos=3, srt=90, cex=0.7, xpd=TRUE)
+    mtext(side=1, text="Duration of transmission\nlineage detection (weeks)", line=2, cex=0.8)
+```
+
+
+\clearpage
+
+# Transmission lineage TMRCA distribution
+
+```{r tmrca-captions} 
+
+    tmrca_density_cap <- paste0("The number of UK transmission lineage TMRCAs on each date across the 2000 posterior trees (median = blue line, 50% HPD interval = dark blue shading, 95% HPD interval = light blue shading).")
+
+    tmrca_mcc_hist_cap <- paste0("Histogram of lineage TMRCAs, coloured by lineage size. Inset: expanded view of the days prior to UK lockdown. Left-hand arrow = collection date of the UK’s first laboratory-confirmed case; right-hand arrow = collection date of the earliest UK virus genome in our dataset.")
+    
+    tmrca_comparison_cap <- paste0("Comparison between the number of UK transmission lineage TMRCAs on each date in the MCC trees (red line) and across the 2000 posterior trees (median = blue line, 95% HPD interval = blue shading). Unevenness in this distribution is mostly likely caused by the phylogenetic constraints imposed by the sequence sampling times.")
+    
+    tmrca_hist_replicates_cap <- paste0("Histogram of lineage TRMCAs of 8 (of ", nreps, ") randomly selected posterior trees.")
+
+```
+
+
+```{r tmrca-density, fig.width=7, fig.height=3, fig.cap = tmrca_density_cap, eval=TRUE, include=FALSE}
+
+    tmrcaBreaks  <- seq.Date(as.Date("2019-12-01"), as.Date("2020-06-26"), by="days")
+
+    tmrca_matrix <- sapply(seq_len(nreps), function(i) hist(clusterStats$tmrca_calendar[clusterStats$tree == i], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)$counts)
+    tmrca_HPD    <- getMatrixHPD.boa(t(tmrca_matrix), dataframe = FALSE)
+    tmrca_IQR    <- getMatrixHPD.boa(t(tmrca_matrix), dataframe = FALSE, alpha=0.5)  
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    dateFreqDistribution(tmrca_HPD, tmrcaBreaks, plot.ci=TRUE,  barplot=FALSE, 
+                         startDate = startDate, endDate = endDate, 
+                         col=NA, ci.color = mPal(ukPal$nir, 0.5), border = mPal(ukPal$nir),
+                         ymax=70)
+    dateFreqDistribution(tmrca_IQR, tmrcaBreaks, plot.ci=TRUE,  barplot=FALSE, add=TRUE,
+                         startDate = startDate, endDate = endDate, 
+                         col=mPal(ukPal$sct), ci.color = mPal(ukPal$sct, 0.5), border = mPal(ukPal$nir),
+                         ymax=70)
+    
+```
+
+
+```{r tmrca-mcc-hist, fig.width=9, fig.height=4, fig.cap = tmrca_mcc_hist_cap, eval=TRUE}
+
+    tmrca_hist  <- hist(clusterStatsMCC$tmrca_calendar, breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    
+    tmrca_hist_small <- hist(clusterStatsMCC$tmrca_calendar[clusterStatsMCC$seqs <= 10], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    tmrca_hist_med   <- hist(clusterStatsMCC$tmrca_calendar[clusterStatsMCC$seqs > 10  & clusterStatsMCC$seqs <= 100], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    tmrca_hist_big   <- hist(clusterStatsMCC$tmrca_calendar[clusterStatsMCC$seqs > 100 & clusterStatsMCC$seqs <= 1000], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    tmrca_hist_huge  <- hist(clusterStatsMCC$tmrca_calendar[clusterStatsMCC$seqs > 1000], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    
+    # Stacked barplot
+    par(mar=c(4,6,2.5,7), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    tmrca_hist_breakdown <- data.frame(huge  = tmrca_hist_huge$counts,
+                                       big   = tmrca_hist_big$counts,
+                                       med   = tmrca_hist_med$counts,
+                                       small = tmrca_hist_small$counts)
+    dateFreqDistribution(t(tmrca_hist_breakdown), tmrcaBreaks, plot.ci=FALSE, barplot=TRUE,
+                         startDate = startDate, endDate = "2020-06-21", col=mPal(unlist(ukPal), 0.75), border=mPal(unlist(ukPal)), ymax=70)
+    
+    
+    legend("bottom", horiz=FALSE, inset=c(0,0.95), bty='n', xpd=TRUE, ncol=2,
+           fill=mPal(unlist(ukPal), 0.75), border = mPal(unlist(ukPal)), 
+           legend = c("Bigger than 1000", "101 to 1000", "11 to 100", "10 or smaller"), title = "Transmission lineage size",
+           cex=0.8)
+    
+
+    # Inset of start
+    ymax <- 6
+    
+    rect(as.Date("2020-01-19")-startDate, 0, as.Date("2020-03-22")-startDate, ymax, lty=2)
+
+    par(mar=c(2,2,0.5,0.5), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0), fig=c(0.575, 0.92, 0.38, 0.8), new=TRUE)
+    dateFreqDistribution(t(tmrca_hist_breakdown), tmrcaBreaks, plot.ci=FALSE, barplot=TRUE,
+                         startDate = "2020-01-19", endDate = "2020-03-22", col=mPal(unlist(ukPal), 0.75), border=mPal(unlist(ukPal)), ymax=ymax)
+    
+    rect(0, 0, 63, ymax, xpd=TRUE)
+    
+    points(x=(labelDates$oldestCase-as.Date("2020-01-19")), y=-0.09*ymax, pch=173, font=5, cex=1.5, xpd=TRUE, col="#000000")
+    points(x=(labelDates$oldestSeq-as.Date("2020-01-19")), y=0.12*ymax, pch=175, font=5, cex=1.5, xpd=TRUE, col="#000000")
+    
+    
+```
+    
+   
+```{r tmrca-comparison, fig.width=7, fig.height=3, fig.cap = tmrca_comparison_cap, eval=TRUE}   
+    
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+    dateFreqDistribution(tmrca_HPD, tmrcaBreaks, plot.ci=TRUE,  barplot=FALSE, 
+                         startDate = startDate, endDate = endDate, 
+                         col=mPal(ukPal$sct), ci.color = mPal(ukPal$nir, 0.75), border = mPal(ukPal$nir),
+                         ymax=70)
+    
+    dateFreqDistribution(tmrca_hist$counts, tmrcaBreaks, barplot=FALSE, add=TRUE,
+                             startDate = startDate, endDate = endDate, col=NA, border=mPal(ukPal$eng))
+    
+    
+```
+
+```{r tmrca-thresholds, fig.width=7, fig.height=3, fig.cap = "Comparison between TMRCA distributions with posterior probability thresholds of 0.5 and 0.95.", eval=TRUE}   
+
+    par(mar=c(4,6,2.5,6), cex.axis=0.7, cex.lab=0.8, mgp=c(3,0.75,0))
+
+    tmrcaBreaks  <- seq.Date(as.Date("2019-12-01"), as.Date("2020-06-26"), by="days")
+
+    tmrca_hist_50 <- hist(clusterStatsMCC$tmrca_calendar,    breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    tmrca_hist_75 <- hist(clusterStatsMCC_75$tmrca_calendar, breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+    tmrca_hist_95 <- hist(clusterStatsMCC_95$tmrca_calendar, breaks=tmrcaBreaks, plot=FALSE, right=FALSE)   
+
+
+    dateFreqDistribution(tmrca_hist_50$counts, tmrcaBreaks, plot.ci=FALSE, barplot=FALSE,
+                         startDate = startDate, endDate = "2020-06-21", col=mPal(countryPal$France, 0.5), border=mPal(countryPal$France), ymax=70)
+    #dateFreqDistribution(tmrca_hist_75$counts, tmrcaBreaks, plot.ci=FALSE, barplot=FALSE, add = TRUE,
+                         #startDate = startDate, endDate = "2020-06-21", col=mPal(countryPal$Italy, 0.25), border=mPal(countryPal$Italy), ymax=70)
+    dateFreqDistribution(tmrca_hist_95$counts, tmrcaBreaks, plot.ci=FALSE, barplot=FALSE, add = TRUE,
+                         startDate = startDate, endDate = "2020-06-21", col=mPal(countryPal$Spain, 0.5), border=mPal(countryPal$Spain), ymax=70)
+    
+    
+    legend("bottom", horiz=TRUE, inset=c(0,0.95), bty='n', xpd=TRUE,
+           fill=mPal(c(countryPal$France, countryPal$Spain), 0.75), border = mPal(c(countryPal$France, countryPal$Spain)), 
+           legend = c("0.5", "0.95"), title = "Posterior probability threshold",
+           cex=0.8)
+    
+```
+
+
+```{r tmrca-hist-replicates, fig.width=7, fig.height=8, fig.cap = tmrca_hist_replicates_cap}
+
+    preps <- 8
+    ncol  <- 2
+    reps  <- sort(sample(nreps, preps))
+    
+    par(mar=c(4,6,2.5,1), cex.axis=0.8, cex.lab=0.8, cex.main=1, mgp=c(2,0.75,0))
+    layout(matrix(1:preps, ncol=ncol, byrow=TRUE))
+    for (i in 1:preps) {
+        tmrca_hist <- hist(clusterStats$tmrca_calendar[clusterStats$tree == reps[i]], breaks=tmrcaBreaks, plot=FALSE, right=FALSE)      
+      
+        dateFreqDistribution(tmrca_hist$counts, tmrcaBreaks, 
+                             startDate = startDate, endDate = endDate, col=mPal(ukPal$oth), ymax=80, label=LETTERS[i])
+        title(paste("Replicate",reps[i]))
+    }
+
+```
+
+
+\clearpage
+
+# Size and duration vs. TMRCA
+
+```{r sizeduration-vs-tmrca, fig.width=5, fig.height=6, fig.cap="Scatterplots showing the relationship between (A) UK transmission lineage size and lineage TMRCA and between (B) UK transmission lineage sampling duration and lineage TMRCA. Pearson correlation coefficients, 95% CIs and p-values are shown in the top-right corners."} 
+
+    par(mar=c(6,4,2.5,6), cex.axis=0.8, cex.lab=0.8, mgp=c(2,0.75,0))
+    layout(matrix(1:2, nrow=2, byrow=TRUE))
+
+    plotLineageScatter(clusterStatsMCC, stat1="tmrca", stat2="seqs", startDate = startDate, endDate = endDate, addLine = TRUE, ymax=1000, log=TRUE, label="A", 
+                   ylab="Transmission lineage size")
+
+    plotLineageScatter(clusterStatsMCC, stat1="tmrca", stat2="duration", startDate = startDate, endDate = endDate, addLine = TRUE, ymax=150, log=FALSE, label="B", 
+                   ylab="Duration of transmission\nlineage detection (days)")
+    
+
+
+```
+
+```{r size-vs-duration, fig.width=5, fig.height=3, fig.cap="Scatterplot showing the strong relationship between UK transmission lineage size and sampling duration. The Pearson correlation coefficient, 95% CI and p-value are shown."}
+    
+    par(mar=c(6,4,2.5,6), cex.axis=0.8, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    plotScatter(clusterStatsMCC, stat1="duration", stat2="seqs", xmax=140, addLine = TRUE, ymax=1000, log=TRUE, plotCI = TRUE, 
+                   ylab="Transmission lineage size", xlab="Duration of transmission\nlineage detection (days)")
+        
+
+```
+
+
+
+
+\clearpage
+
+# Time since lineage last sampled
+
+```{r time-unsampled-data}
+
+
+    centralDiff1w <- function(x, f) {
+        (-f[x-3] + 9*f[x-2] -45*f[x-1] + 45*f[x+1] - 9*f[x+2] + f[x+3])/60
+    }
+
+    backwardDiff1w <- function(x, f) {
+        (f[x] - f[x-7])/7
+    }
+
+    tic()
+    
+    # Get lineage/cluster status
+    unseenBreaks <- seq.Date(as.Date("2020-02-10"), endDate+4, by="days")
+    timeBreaks   <- seq(0, 147, by=7)
+    timeUnsampled   <- c()
+    timeDetected    <- c()
+    
+    for (i in 1:(length(unseenBreaks)-1)) {
+      currDate  <- unseenBreaks[i]
+      clusters  <- clusterStatsMCC[clusterStatsMCC$oldest <= decimal_date(currDate), ]
+      clusters$lastseen  <- sapply(seq_len(nrow(clusters)), function(i) max(0, 366*(decimal_date(currDate) - clusters$mostrecent[i])))
+      clusters$firstseen <- sapply(seq_len(nrow(clusters)), function(i) 366*(decimal_date(currDate) - clusters$oldest[i]))
+        
+      timeUnsampled <- rbind(timeUnsampled, 
+                             hist(clusters$lastseen, breaks=timeBreaks, plot=FALSE, right=FALSE)$counts)  
+      
+      timeDetected  <- rbind(timeDetected, 
+                             hist(clusters$firstseen, breaks=timeBreaks, plot=FALSE, right=TRUE)$counts)  
+    }
+    
+    rownames(timeUnsampled) <- rownames(timeDetected) <- format.Date(unseenBreaks[1:(length(unseenBreaks)-1)], format="%Y-%m-%d")
+    colnames(timeUnsampled) <- paste0("Less_", timeBreaks[2:length(timeBreaks)]/7, "w")  # column contains nr seen in less than that nr of days
+    colnames(timeDetected)  <- paste0("Less_", timeBreaks[2:length(timeBreaks)]/7, "w")  # column contains nr seen in less than that nr of days
+    
+    timeUnsampled <- data.frame(timeUnsampled)
+    timeUnsampledProps <- timeUnsampled/rowSums(timeUnsampled)
+    
+    timeDetected <- data.frame(timeDetected)
+    timeDetectedProps <- timeDetected/rowSums(timeDetected)
+    
+    
+    # Rates
+    
+    # First derivative wrt time, use backward difference with a 7-day step, ignore in-between points (too noisy)
+    # Putatively extinct lineages have not been observed for >4 weeks
+    extinctionRate   <- 
+    detectionRate    <- 
+    genomeRate       <- data.frame(x = as.Date(rownames(timeUnsampled)[8:(nrow(timeUnsampled))])) 
+    
+    extinctionRate$y <- sapply(8:(nrow(timeUnsampled)), backwardDiff1w, rowSums(timeUnsampled[, 4:ncol(timeUnsampled)]))
+    detectionRate$y  <- sapply(8:(nrow(timeUnsampled)), backwardDiff1w, rowSums(timeUnsampled))
+    
+    # 7-day rolling average
+    extinctionRate$z <- sapply(1:length(extinctionRate$y), function(i) mean(extinctionRate$y[max(i-3,1):min(i+3, length(extinctionRate$y))]))
+    detectionRate$z  <- sapply(1:length(detectionRate$y), function(i) mean(detectionRate$y[max(i-3,1):min(i+3, length(detectionRate$y))]))
+
+    genomesPerDay    <- hist(metadata$sample_date[metadata$country == "UK" & metadata$sample_date >= unseenBreaks[1]], breaks=unseenBreaks, plot=FALSE, right=FALSE)$counts
+    genomeRate$raw   <- genomesPerDay[8:(length(genomesPerDay))]
+    genomeRate$y     <- sapply(8:(nrow(timeUnsampled)), backwardDiff1w, cumsum(genomesPerDay))
+
+    toc()
+
+```
+
+```{r time-unsampled-data-reps, cache=TRUE, eval=TRUE}
+
+    # Get lineage/cluster status across replicates
+    tic()
+    timeUnsampledReps <- lapply(1:nreps, function(tree) {
+        result <- c()
+        for (i in 1:(length(unseenBreaks)-1)) {
+          currDate  <- unseenBreaks[i]
+          clusters  <- clusterStats[clusterStats$tree == tree & clusterStats$oldest <= decimal_date(currDate), ]
+          clusters$lastseen  <- sapply(seq_len(nrow(clusters)), function(i) max(0, 366*(decimal_date(currDate) - clusters$mostrecent[i])))
+          
+          result <- rbind(result, hist(clusters$lastseen, breaks=timeBreaks, plot=FALSE, right=FALSE)$counts)  
+        }
+        rownames(result) <- format.Date(unseenBreaks[1:(length(unseenBreaks)-1)], format="%Y-%m-%d")
+        colnames(result) <- paste0("Less_", timeBreaks[2:length(timeBreaks)]/7, "w")  # column contains nr seen in less than that nr of days
+        return(result)
+    })
+    toc()
+    
+    
+    # Rates
+    extinctionRateReps <- sapply(1:length(timeUnsampledReps), 
+                                 function(x) sapply(8:(nrow(timeUnsampledReps[[x]])), backwardDiff1w, rowSums(timeUnsampledReps[[x]][, 4:ncol(timeUnsampledReps[[x]])])))
+    
+    detectionRateReps  <- sapply(1:length(timeUnsampledReps),
+                                 function(x) sapply(8:(nrow(timeUnsampledReps[[x]])), backwardDiff1w, rowSums(timeUnsampledReps[[x]])))
+    
+    extinctionRateHPD  <- getMatrixHPD.boa(t(extinctionRateReps))
+    detectionRateHPD   <- getMatrixHPD.boa(t(detectionRateReps))
+    
+    t <- rownames(extinctionRateReps)
+```
+
+
+```{r time-unsampled-proportions,  fig.width=7, fig.height=3, fig.cap="Trends through time in the detection of UK transmission lineages (proportions). For each day, all lineages detected up to that day are coloured by the time since the transmission lineage was last sampled. Isoclines correspond to weeks. Shaded area=transmission lineages that were first sampled <1 week ago. The red arrow indicates the start of the UK lockdown."}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    plotDateGradient(timeUnsampledProps[,1:17], unseenBreaks, startDate="2020-03-01", endDate="2020-06-07", 
+                     barplot=FALSE, border="#00000044", lty=1, lwd=0.5, axes=TRUE,
+                     ylab="Proportion of\ntransmission lineages",  
+                     palfn = inferno, alpha=0.75, direction=-1,
+                     legend="Weeks since\nlast sampled", legendPos = c(0.93, 0.95, 0.3, 0.6))
+
+    # Highlight 1 week and 4 week isoclines
+    polygon(ymd(c("2020-01-01", rownames(timeUnsampledProps), "2020-07-01")), c(0, timeUnsampledProps$Less_1w, 0),         border="#000000CC")
+    polygon(ymd(c("2020-01-01", rownames(timeUnsampledProps), "2020-07-01")), c(0, rowSums(timeUnsampledProps[, 1:4]), 0), border="#000000CC")
+
+    # Newly detected lineages
+    polygon(ymd(c("2020-01-01", rownames(timeDetectedProps))), c(0, timeDetectedProps$Less_1w), angle = 45, density = 15, lty=2, border="#000000CC", col="#000000CC")
+
+    # Mark lockdown    
+    points(x=travelDates$lockdown, y=0.1, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+        
+```
+
+
+
+```{r time-unsampled-rates,  fig.width=7, fig.height=3, fig.cap="Red line=daily rate of detecting new transmission lineages. Blue line=rate at which lineages have not been observed for >4 weeks, shading=95% HPD across the posterior tree distribution.", eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    ymax <- 0.25
+
+    plotShadedAxes(xlim=c(ymd("2020-03-01"), ymd("2020-06-07")), ylim=c(0, ymax), yaxs='i', ylab="Transmission lineages / genome", axes=TRUE)
+    
+    polygon(as.Date(c(t, rev(t))), c(detectionRateHPD[1,]/genomeRate$y, rev(detectionRateHPD[3,]/genomeRate$y)), col=mPal(ukPal$eng, 0.5), border=NA)
+    lines(detectionRate$x,  detectionRate$y/genomeRate$y,  lwd=2, lty=1, col=mPal(ukPal$eng))
+    
+    polygon(as.Date(c(t, rev(t))), c(extinctionRateHPD[1,]/genomeRate$y, rev(extinctionRateHPD[3,]/genomeRate$y)), col=mPal(ukPal$sct, 0.5), border=NA)
+    lines(extinctionRate$x, extinctionRate$y/genomeRate$y, lwd=2, lty=1, col=mPal(ukPal$sct))
+    
+    legend("bottom", horiz=FALSE, inset=c(0,1), bty='n', xpd=TRUE, ncol=2,
+           col=c(mPal(ukPal$eng), mPal(ukPal$sct)), lwd=2,
+           legend = c("Detecting new transmission lineages", "Lineages not observed >4 weeks"), title="Rate of", cex=par("cex.lab"))
+    
+    # Mark lockdown    
+    # points(x=travelDates$lockdown, y=0.1*ymax, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+        
+```
+
+
+```{r time-unsampled-absolute,  fig.width=7, fig.height=3, fig.cap="Trends through time in the detection of UK transmission lineages (absolute values). For each day, all lineages detected up to that day are coloured by the time since the transmission lineage was last sampled. Isoclines correspond to weeks. Shaded area=transmission lineages that were first sampled <1 week ago. The red arrow indicates the start of the UK lockdown.", eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    plotDateGradient(timeUnsampled, unseenBreaks, startDate="2020-03-01", endDate="2020-06-07", 
+                     barplot=FALSE, border="#00000044", axes=TRUE, normalise = FALSE,
+                     ylab="No. of\ntransmission lineages",  
+                     palfn = inferno, alpha=0.75, direction=-1, 
+                     legend="Weeks since\nlast sampled", legendPos = c(0.93, 0.95, 0.3, 0.6))
+    
+    polygon(ymd(c("2020-01-01", rownames(timeDetected))), c(0, timeDetected$Less_1w), angle = 45, density = 15, lty=2, border="#000000CC", col="#000000CC")
+
+    
+    par(new=TRUE)
+    
+    ymax <- 50
+    plot(1, type='n', xlim=c(ymd("2020-03-01"), ymd("2020-06-07")), ylim=c(0,ymax), axes=FALSE, xaxs='i', yaxs='i', xlab="", ylab="")
+    axis(4, las=2)
+    mtext(side=4, text="Transmission lineages per day", cex=par("cex.lab"), line=1.5)
+    
+    lines(detectionRate$x,  detectionRate$y,  lwd=2, lty=1, col=mPal(ukPal$eng))
+    lines(extinctionRate$x, extinctionRate$y, lwd=2, lty=1, col=mPal(ukPal$sct))
+    
+    legend("bottom", horiz=FALSE, inset=c(0,1), bty='n', xpd=TRUE, ncol=2,
+           col=c(mPal(ukPal$eng), mPal(ukPal$sct)), lwd=2,
+           legend = c("Detecting new transmission lineages", "Lineages not observed >4 weeks"), title="Rate of", cex=par("cex.lab"))
+    
+    # Mark lockdown    
+    points(x=travelDates$lockdown, y=0.1*ymax, pch=175, font=5, cex=1.5, xpd=TRUE, col=mPal(ukPal$eng))
+
+```
+
+
+
+\clearpage
+
+
+# Session info
+
+```{r sessionInfo, results='markup'}
+    sessionInfo()
+```
