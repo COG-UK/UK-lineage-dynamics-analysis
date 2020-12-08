@@ -69,8 +69,8 @@ Run the RMarkDown notebooks below to extract UK transmission lineages and reprod
 
 - **DTA output:** Log files, MCC trees and subsampled posterior tree files **(thinned to only 200 posterior trees)** can be found in [`results/xml/dta/output/`](results/xml/dta/output/).
 - **UK transmission lineages:** The extracted UK transmission lineages can be found in [`results/combined_beast_dta/`](results/combined_beast_dta/). Only the summary `.csv` files are provided on this repository. 
-	- [`clusters_DTA.csv`](results/combined_beast_dta/clusters_DTA.csv): Summary statistics of UK transmission lineages across all **2000** posterior trees.
-	- [`clusterSamples_DTA.csv`](results/combined_beast_dta/clusterSamples_DTA.csv): Assignment of UK genomes to transmission lineages across all **2000** posterior trees.
+	- [`clusters_DTA.csv.xz`](results/combined_beast_dta/clusters_DTA.csv): Summary statistics of UK transmission lineages across all **2000** posterior trees.
+	- [`clusterSamples_DTA.csv.xz`](results/combined_beast_dta/clusterSamples_DTA.csv): Assignment of UK genomes to transmission lineages across all **2000** posterior trees.
 	- [`clusters_DTA_MCC_0.5.csv`](results/combined_beast_dta/clusters_DTA_MCC_0.5.csv): Summary statistics of UK transmission lineages on the MCC trees using a posterior probability threshold of 0.5. _**Note that the assignment of genomes to transmission lineages is based on the MCC (summary) tree(s), and therefore does  not include the statistical uncertainty that is present in the posterior set of trees.**_
 	- [`clusters_DTA_MCC_0.5_shifted.csv`](results/combined_beast_dta/clusters_DTA_MCC_0.5_shifted.csv): As above, but including importation lag.
 	- [`clusterSamples_DTA_MCC_0.5.csv`](results/combined_beast_dta/clusterSamples_DTA_MCC_0.5.csv): Assignment of UK genomes to transmission lineages on the MCC trees using a posterior probability threshold of 0.5. _**Note that the assignment of genomes to transmission lineages is based on the MCC (summary) tree(s), and therefore does  not include the statistical uncertainty that is present in the posterior set of trees.**_
