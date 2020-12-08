@@ -5,7 +5,7 @@
 ---
 
 This repository contains the data and code used to generate the results
-presented in *PAPER DOI*. Some of the scripts may need some adjustment depending on the local setup.
+presented in [ https://doi.org/10.1101/2020.10.23.20218446](https://doi.org/10.1101/2020.10.23.20218446). Some of the scripts may need some adjustment depending on the local setup.
 
 Note that because of the GISAID [terms of use](https://www.gisaid.org/registration/terms-of-use/) genomic sequences cannot be shared in this repository. Instead, we make the GISAID accessions available and provide a table of acknowledgements. Note also that we cannot make administrative level two (adm2) metadata for genomic sequences available. All genomic sequences produced by COG-UK are available [here](https://www.cogconsortium.uk/data/).
 
