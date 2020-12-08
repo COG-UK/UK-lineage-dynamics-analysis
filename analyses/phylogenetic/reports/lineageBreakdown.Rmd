@@ -1,0 +1,747 @@
+---
+title: "COVID-19 UK introductions"
+subtitle: "Transmission lineage breakdown (detailed descriptions)"
+author: "Louis du Plessis"
+date: '`r format(Sys.time(), "Last modified: %d %b %Y")`'
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    keep_tex: false
+    fig_crop: false
+layout: page
+editor_options: 
+  chunk_output_type: inline
+params: 
+  inputpath  :  "../../../data/phylogenetic/"
+  outputpath : "../results/combined_beast_dta/"
+  cluster_f  : "DTA"
+  startDate  : "2020-01-19"
+  endDate    : "2020-06-21"
+  device     : "pdf"
+  
+---
+
+```{r rsetup, include=FALSE}
+  
+    library(lubridate)
+    library(gplots)
+    library(viridis)
+    library(tictoc)
+    source("../scripts/palettes.R")
+    source("../scripts/plotutils.R")
+    #source("../scripts/clusterutils.R")
+
+    inputpath  <- params$inputpath
+    outputpath <- params$outputpath
+    cluster_f  <- params$cluster_f
+    
+    startDate  <- as.Date(params$startDate)
+    endDate    <- as.Date(params$endDate)
+
+    figpath    <- paste0(outputpath, "figures/lineage_breakdown_figures_", params$device, "/")
+    dir.create(figpath, recursive = TRUE, showWarnings = FALSE)
+    
+    cachepath  <- paste0(outputpath, "figures/cache/lineageBreakdown_", params$device, "/")
+
+
+    knitr::opts_chunk$set(tidy=FALSE, cache=FALSE, cache.path = cachepath, 
+                          dev=params$device, fig.path=figpath, dpi=300,
+                          message=FALSE, error=TRUE, warning=TRUE, echo=FALSE)
+    
+    labelDates <- list("oldestCase" = as.Date("2020-01-30"), 
+                       "oldestSeq"  = as.Date("2020-02-03"))
+    
+    dateBreaks  <- seq.Date(startDate, endDate+1, by="day")
+
+```
+
+# Summary
+This notebook plots breakdowns of UK transmission lineages over time (using only the assignment on the MCC trees).
+
+## Input
+- Metadata table (in `inputpath`).
+- Cluster statistics for MCC trees (in `outputpath`):
+  - `clusters_DTA_MCC_0.5.csv`
+  - `clusterSamples_DTA_MCC_0.5.csv`
+
+## Output
+- Lineage breakdown figures and tables.
+
+
+```{r load-data, cache=TRUE}
+               
+    metadata              <- read.csv(paste0(inputpath, "metadata.csv"))
+    metadata$sample_date  <- ymd(metadata$sample_date)
+    metadata$decimal_date <- decimal_date(metadata$sample_date)    
+    metadata$taxon_label  <- metadata$sequence_name
+    #metadata$taxon_label <- gsub("/", "_", as.character(metadata$sequence_name))
+    
+    clusterStatsMCC   <- read.csv(paste0(outputpath, "clusters_", cluster_f, "_MCC_0.5.csv"))
+    clusterSamplesMCC <- read.csv(paste0(outputpath, "clusterSamples_", cluster_f, "_MCC_0.5.csv"))
+
+    # Convert dates to POSIX dates
+    clusterStatsMCC$tmrca_calendar <- ymd(clusterStatsMCC$tmrca_calendar)
+    clusterSamplesMCC$sample_date  <- ymd(clusterSamplesMCC$sample_date)
+
+    
+    lineageSizes <- sort(table(clusterSamplesMCC$cluster))
+    clusterSamplesMCC$lineage_seqs            <- sapply(as.character(clusterSamplesMCC$cluster), function(x) lineageSizes[x])
+    clusterSamplesMCC$lineage_tmrca           <- sapply(seq_len(nrow(clusterSamplesMCC)), function(x) 
+                                                        ifelse(clusterSamplesMCC$lineage_seqs[x] == 1, NA, clusterStatsMCC$tmrca[clusterStatsMCC$cluster == as.character(clusterSamplesMCC$cluster[x])]))
+    #clusterSamplesMCC$lineage_tmrca_calendar  <- sapply(seq_len(nrow(clusterSamplesMCC)), function(x) 
+    #                                                    ifelse(clusterSamplesMCC$lineage_seqs[x] == 1, NA, clusterStatsMCC$tmrca_calendar[clusterStatsMCC$cluster == as.character(clusterSamplesMCC$cluster[x])]))
+    clusterSamplesMCC$lineage_oldest          <- sapply(seq_len(nrow(clusterSamplesMCC)), function(x) 
+                                                        ifelse(clusterSamplesMCC$lineage_seqs[x] == 1, NA, clusterStatsMCC$oldest[clusterStatsMCC$cluster == as.character(clusterSamplesMCC$cluster[x])]))
+    clusterSamplesMCC$lineage_mostrecent      <- sapply(seq_len(nrow(clusterSamplesMCC)), function(x) 
+                                                        ifelse(clusterSamplesMCC$lineage_seqs[x] == 1, NA, clusterStatsMCC$mostrecent[clusterStatsMCC$cluster == as.character(clusterSamplesMCC$cluster[x])]))
+    clusterSamplesMCC$lineage_duration        <- 366*(clusterSamplesMCC$lineage_mostrecent - clusterSamplesMCC$lineage_tmrca)
+    clusterSamplesMCC$lineage_age             <- 366*(clusterSamplesMCC$decimal_date - clusterSamplesMCC$lineage_oldest)
+    
+    clusterSamplesMCCnoSingles <- clusterSamplesMCC[!is.na(clusterSamplesMCC$lineage_tmrca), ]
+    clusterSamplesMCCnoSingles$lineage_tmrca_calendar <- ymd(round_date(date_decimal(clusterSamplesMCCnoSingles$lineage_tmrca), unit="day"))
+    
+    
+    # Get the cutoff for plotting samples in lineage plots
+    # (First day when cumulatively 500 UK genomes have been sequenced)
+    ukgenomes <- sort(metadata$sample_date[metadata$country == "UK"])
+    cutoff    <- ukgenomes[500]
+    
+```
+
+```{r functions}
+
+    getSampleBreakdown <- function(clusterSummary, clusterSamples, dateBreaks, 
+                                    stat="lineage_tmrca", breaks) {
+      
+      clusterSamples$sample_date <- as.Date(clusterSamples$sample_date)
+      dateBreaks                 <- as.Date(dateBreaks)
+      
+      
+      dateBreakdown <- c()
+      for (i in 2:length(dateBreaks)) {
+        samples      <- clusterSamples[clusterSamples$sample_date >= dateBreaks[i-1] & clusterSamples$sample_date < dateBreaks[i] & clusterSamples$country == "UK", ]
+        
+        if (nrow(samples) > 0) {
+          dateBreakdown <- rbind(dateBreakdown, hist(samples[[stat]], plot=FALSE, breaks=breaks)$counts)
+        } else {
+          dateBreakdown <- rbind(dateBreakdown, rep(0, length(breaks)-1))
+        }
+      }
+      rownames(dateBreakdown) <- format.Date(dateBreaks[1:(length(dateBreaks)-1)], format="%Y-%m-%d") # (used equivalent of right = FALSE)
+      colnames(dateBreakdown) <- breaks[2:length(breaks)]  # (used default right = TRUE)
+      
+      return(dateBreakdown)
+    }
+
+    getSampleLineageBreakdown <- function(clusterSamples, breaks="weeks", startDate="2020-01-12", endDate="2020-06-28") {
+    
+        uksamples <- droplevels(clusterSamples[clusterSamples$country == "UK", ])
+        uksamples$sample_date <- as.Date(uksamples$sample_date)
+        
+        sampleBreaks      <- seq.Date(as.Date(startDate), as.Date(endDate), by=breaks)
+        
+        
+        #################################################
+        # Get nr of sequences / period for each lineage #
+        #################################################
+        
+        sizeDistr  <- sort(table(uksamples$cluster), decreasing=TRUE)
+        clustNames <- names(sizeDistr)
+        
+        clustSizes <- c()
+        for (cluster in clustNames) {
+            sampleDates <- uksamples$sample_date[uksamples$cluster == cluster]
+            sampleHist  <- hist(sampleDates, breaks=sampleBreaks, plot=FALSE, right=FALSE)
+            clustSizes  <- cbind(clustSizes, sampleHist$counts)
+        }
+        rownames(clustSizes) <- format.Date(sampleBreaks[1:(length(sampleBreaks)-1)])    # Label rows by the start of the epi-week the row represents
+        colnames(clustSizes) <- clustNames
+        
+        weekSums   <- rowSums(clustSizes)
+        weekSums[weekSums == 0] <- 1
+        clustProps <- clustSizes/weekSums
+    
+        
+        ########################################
+        # Aggregate into different size groups #
+        ########################################
+        
+        aggregateLineages <- function(name, sizes) {
+            if (sizes[name] == 1) {
+                return("singleton")
+            } else 
+            if (sizes[name] <= 10) {
+                return("small")
+            } else 
+            if (sizes[name] <= 100) {
+                return("medium")
+            } else 
+            if (sizes[name] <= 1000) {
+                return("big")
+            } else {
+                return("huge")
+            }
+        }
+        
+        uksamples$aggr_lineage <- factor(sapply(as.character(uksamples$cluster), function(x) aggregateLineages(x, sizeDistr)))
+        aggrSizes <- c()
+        sizeCats  <- c("huge", "big", "medium", "small", "singleton")
+        for (cat in sizeCats) {
+            sampleDates <- uksamples$sample_date[uksamples$aggr_lineage == cat]
+            sampleHist  <- hist(sampleDates, breaks=sampleBreaks, plot=FALSE, right=FALSE)
+            aggrSizes   <- cbind(aggrSizes, sampleHist$counts)
+        }
+        rownames(aggrSizes) <- format.Date(sampleBreaks[1:(length(sampleBreaks)-1)])
+        colnames(aggrSizes) <- sizeCats
+        
+        weekSums   <- rowSums(aggrSizes)
+        weekSums[weekSums == 0] <- 1
+        aggrProps <- aggrSizes/weekSums
+        
+        
+        
+        #########################################
+        # Top 8 largest clusters (>400 genomes) #
+        #########################################
+        
+        
+        clustSizesTop8 <- clustSizes[, 1:8]
+        clustPropsTop8 <- clustProps[, 1:8]
+        
+        clustSizesTop8 <- cbind(clustSizesTop8, c(rowSums(clustSizes) - rowSums(clustSizesTop8)))
+        clustPropsTop8 <- cbind(clustPropsTop8, c(rowSums(clustProps) - rowSums(clustPropsTop8)))
+        colnames(clustSizesTop8)[9] <- colnames(clustPropsTop8)[9] <- "Other"
+    
+        
+        #######################################################################
+        # Hybrid approach, 8 largest clusters + aggregated sizes for the rest #
+        #######################################################################
+        
+        t <- aggrSizes[, 2:ncol(aggrSizes)]
+        t[, 1] <- t[, 1] + aggrSizes[, 1] - rowSums(clustSizesTop8[, 1:8])
+        clustSizesHybrid <- cbind(clustSizesTop8[, 1:8], t)
+        
+        t <- aggrProps[, 2:ncol(aggrProps)]
+        t[, 1] <- t[, 1] + aggrProps[, 1] - rowSums(clustPropsTop8[, 1:8])
+        clustPropsHybrid <- cbind(clustPropsTop8[, 1:8], t)
+     
+        return(list(sampleBreaks = sampleBreaks, 
+                    clustSizes   = clustSizes, 
+                    clustProps   = clustProps, 
+                    aggrSizes    = aggrSizes, 
+                    aggrProps    = aggrProps, 
+                    clustSizesTop8   = clustSizesTop8, 
+                    clustPropsTop8   = clustPropsTop8, 
+                    clustSizesHybrid = clustSizesHybrid, 
+                    clustPropsHybrid = clustPropsHybrid))
+    }
+   
+```
+
+
+\clearpage
+
+
+# Sample breakdown (daily)
+
+```{r samples-vs-lineage-age-absolute, fig.width=7, fig.height=3, fig.cap = "Number of genomes collected each day, coloured by the time since the age of the transmission lineage when the genome was collected (time from the oldest sampled genome in the lineage to the sampling time of the genome). Note that **only** genomes in transmission lineages are shown (no singletons)."}
+
+
+    sampleVsLineageAge <- getSampleBreakdown(clusterStatsMCC, clusterSamplesMCCnoSingles, dateBreaks,
+                                             stat="lineage_age", breaks=seq(0, 140, by=7))
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    plotDateGradient(sampleVsLineageAge, dateBreaks, startDate=startDate, endDate=endDate, plotLegend=TRUE,
+                     ymax=800, normalise=FALSE, ylab="No. of sampled genomes\n(per day)",
+                     palfn=inferno, direction=-1, alpha=1, legend = "Lineage age\n(weeks)")
+
+    
+```
+
+```{r samples-vs-lineage-age-proportion, fig.width=7, fig.height=3, fig.cap = "Proportion of genomes collected each day, coloured by the time since the age of the transmission lineage when the genome was collected (time from the oldest sampled genome in the lineage to the sampling time of the genome). Note that **only** genomes in transmission lineages are shown (no singletons)."}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    plotDateGradient(sampleVsLineageAge, dateBreaks, startDate="2020-03-01", endDate="2020-06-07", plotLegend=TRUE,
+                     normalise=TRUE, ylab="Proportion of sampled genomes\n(per day)", axes=TRUE, 
+                     palfn=inferno, direction=-1, alpha=1, legend="Lineage age\n(weeks)")
+    
+```
+
+\clearpage
+
+```{r samples-vs-lineage-tmrca-absolute, fig.width=7, fig.height=3, fig.cap = "Number of genomes collected each day, coloured by the TMRCA of the transmission lineage. Note that **only** genomes in transmission lineages are shown (no singletons)."}
+
+    tmrcaBreaks <- seq(startDate, endDate, by="week")
+    sampleVsLineageTMRCA <- getSampleBreakdown(clusterStatsMCC, clusterSamplesMCCnoSingles, dateBreaks,
+                                               stat="lineage_tmrca_calendar", breaks=tmrcaBreaks)
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    plotDateGradient(sampleVsLineageTMRCA, dateBreaks, startDate=startDate, endDate=endDate, plotLegend=TRUE,
+                     ymax=800, normalise=FALSE, ylab="No. of sampled genomes\n(per day)",
+                     palfn=inferno, direction=-1, alpha=1, legend = "Lineage TMRCA", legendTicks = tmrcaBreaks)
+
+  
+```
+
+```{r samples-vs-lineage-tmrca-proportion, fig.width=7, fig.height=3, fig.cap = "Proportion of genomes collected each day, coloured by the TMRCA of the transmission lineage. Note that **only** genomes in transmission lineages are shown (no singletons)."}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    plotDateGradient(sampleVsLineageTMRCA, dateBreaks, startDate="2020-03-01", endDate="2020-06-07", plotLegend=TRUE,
+                     normalise=TRUE, ylab="Proportion of sampled genomes\n(per day)", axes=TRUE, 
+                     palfn=inferno, direction=-1, alpha=1, legend="Lineage TMRCA", legendTicks = tmrcaBreaks)
+
+```
+
+\clearpage
+
+# Sample breakdown into lineages (weekly)
+
+```{r sample-breakdown-weekly}
+    
+    weeklyBreakdown <- getSampleLineageBreakdown(clusterSamplesMCC, breaks="weeks")
+
+    ###################
+    # Figure captions # 
+    ###################
+    sample_breakdown_weekly_absolute_cap   <- 
+    sample_breakdown_weekly_proportion_cap <- "Lineage size breakdown of UK genomes collected each week. The 8 largest lineages are coloured."
+    
+    sample_breakdown_weekly_absolute_top8_cap   <- "Lineage size breakdown of UK genomes in the 8 largest lineages collected each week."
+
+    sample_breakdown_weekly_lineages_absolute_cap   <-
+    sample_breakdown_weekly_lineages_proportion_cap <- "Lineage size breakdown of UK genomes collected each week."
+    
+    sample_breakdown_weekly_aggr_absolute_cap   <- 
+    sample_breakdown_weekly_aggr_proportion_cap <- "Lineage size breakdown of UK genomes collected each week."
+
+```
+
+
+
+```{r sample-breakdown-weekly-absolute, fig.width=7, fig.height=3, fig.cap = sample_breakdown_weekly_absolute_cap, eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    cols <- c(mPal(unlist(countryPal), 0.75)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 0.75)) 
+    
+    dateFreqDistribution(t(weeklyBreakdown$clustSizesHybrid), weeklyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                         startDate = startDate, endDate = endDate, 
+                         col=cols, border = "#000000", 
+                         ymax = 5000, ylab = "Weekly no. of sampled genomes")
+
+    legendText1 <- c()
+    for (cluster in colnames(weeklyBreakdown$clustSizesHybrid)[1:8]) {
+        i    <- which(clusterStatsMCC$cluster == cluster)
+        size <- clusterStatsMCC$seqs[i]
+        duration <- lubridate::round_date(lubridate::date_decimal(clusterStatsMCC$mostrecent[i]), unit="day") -
+                    lubridate::round_date(lubridate::date_decimal(clusterStatsMCC$tmrca[i]), unit="day")
+        
+        clusterSimple <- paste(strsplit(cluster, split="_")[[1]][c(2,4)], collapse = "_")
+        legendText1   <- c(legendText1, sprintf("%s\n(%d genomes, %d days)", clusterSimple, size, duration))
+    }
+    legend("left", horiz=FALSE, inset=c(1,-0), bty='n', xpd=TRUE, ncol=1,
+           fill=cols[1:8], border = "#000000", 
+           legend = legendText1, y.intersp = 2,
+           cex=0.6)
+    
+    legendText2 <- c(sprintf("Bigger than 100 (n = %d)", sum(clusterStatsMCC$seqs > 100) - 6),
+                     sprintf("11 to 100 (n = %d)", sum(clusterStatsMCC$seqs <= 100 & clusterStatsMCC$seqs > 10)), 
+                     sprintf("10 or smaller (n = %d)", sum(clusterStatsMCC$seqs <= 10)), 
+                     sprintf("Singletons (n = %d)", sum(metadata$country == "UK") - sum(clusterStatsMCC$seqs)))
+    legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=2,
+           fill=cols[9:12], border = "#000000", 
+           legend = legendText2, title = "Transmission lineage size",
+           cex=0.8)
+
+
+```
+
+
+```{r sample-breakdown-weekly-absolute-top8, fig.width=14, fig.height=12, fig.cap = "The weekly sampling frequency of the 8 largest UK transmission lineages.", eval=TRUE}
+  
+  par(mar=c(4,4,2.5,8), cex.axis=1, cex.lab=1.2, cex.main=1.2, mgp=c(3,0.75,0))
+
+  cols <- c(mPal(unlist(countryPal), 0.75)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 0.75)) 
+  
+  layout(matrix(1:8, nrow=4))
+  for (i in 1:8) {
+   
+      dateFreqDistribution(t(weeklyBreakdown$clustSizesTop8[, i]), weeklyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                           startDate = startDate, endDate = endDate, 
+                           col=cols[i], border = "#000000", 
+                           ymax = 500, ylab = "Weekly no. of sampled genomes")
+    
+      mtext(side=3, line=0.5, gsub("\n", " ", legendText1[i]), cex=par("cex.main"))
+      
+      x <- startDate - 0.075*(endDate - startDate)
+      mtext(text = LETTERS[i], side=3, line=0.5, at=x, cex = par("cex.main"))
+
+  }
+  
+```
+
+```{r sample-breakdown-weekly-proportion, fig.width=7, fig.height=3, fig.cap = sample_breakdown_weekly_proportion_cap, eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+    cols <- c(mPal(unlist(countryPal), 0.75)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 0.75)) 
+    
+    dateFreqDistribution(t(weeklyBreakdown$clustPropsHybrid), weeklyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                         startDate = "2020-03-01", endDate = "2020-06-07", 
+                         col=cols, border = "#000000",
+                         ymax = 1, ylab = "Proportion of sampled genomes\n(per week)", axes=TRUE)
+
+    legend("left", horiz=FALSE, inset=c(1,-0), bty='n', xpd=TRUE, ncol=1,
+           fill=cols[1:8], border = "#000000", 
+           legend = legendText1, y.intersp = 2,
+           cex=0.6)
+    
+    legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=2,
+           fill=cols[9:12], border = "#000000", 
+           legend = legendText2, title = "Transmission lineage size",
+           cex=0.8)
+
+
+```
+
+
+\clearpage
+
+```{r sample-breakdown-weekly-lineages-absolute, fig.width=7, fig.height=3, fig.cap = sample_breakdown_weekly_lineages_absolute_cap, eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    dateFreqDistribution(t(weeklyBreakdown$clustSizes), weeklyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                 startDate = startDate, endDate = endDate, 
+                 col=mPal(unlist(countryPal), 0.75), border = NA,
+                 ymax = 5000, ylab = "Weekly no. of sampled genomes")
+
+```
+
+
+```{r sample-breakdown-weekly-lineages-proportion, fig.width=7, fig.height=3, fig.cap = sample_breakdown_weekly_lineages_proportion_cap, eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    dateFreqDistribution(t(weeklyBreakdown$clustProps), weeklyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                 startDate = "2020-03-01", endDate = "2020-06-07", 
+                 col=mPal(unlist(countryPal), 0.75), border = "#000000CC",
+                 ymax = 1, ylab = "Proportion of sampled genomes\n(per week)", axes=TRUE)
+
+
+```
+
+\clearpage
+
+```{r sample-breakdown-weekly-aggr-absolute, fig.width=7, fig.height=3, fig.cap = sample_breakdown_weekly_aggr_absolute_cap, eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    dateFreqDistribution(t(weeklyBreakdown$aggrSizes), weeklyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                 startDate = startDate, endDate = endDate, 
+                 col=mPal(unlist(ukPal), 0.75), border = "#000000",
+                 ymax = 5000, ylab = "Weekly no. of sampled genomes")
+    
+    legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=3,
+           fill=mPal(unlist(ukPal), 0.75), border = mPal(unlist(ukPal)), 
+           legend = c("Bigger than 1000", "101 to 1000", "11 to 100", "10 or smaller", "Singletons"), title = "Transmission lineage size",
+           cex=0.8)
+
+```
+
+
+```{r sample-breakdown-weekly-aggr-proportion, fig.width=7, fig.height=3, fig.cap = sample_breakdown_weekly_aggr_proportion_cap, eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+    dateFreqDistribution(t(weeklyBreakdown$aggrProps), weeklyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                 startDate = "2020-03-01", endDate = "2020-06-07", 
+                 col=mPal(unlist(ukPal), 0.75), border = "#000000",
+                 ymax = 1, ylab = "Proportion of sampled genomes\n(per week)", axes=TRUE)
+
+    legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=3,
+           fill=mPal(unlist(ukPal), 0.75), border = "#000000", 
+           legend = c("Bigger than 1000", "101 to 1000", "11 to 100", "10 or smaller", "Singletons"), title = "Transmission lineage size",
+           cex=0.8)
+  
+
+```
+
+\clearpage
+
+# Sample breakdown into lineages (daily)
+
+```{r sample-breakdown-daily}
+
+dailyBreakdown <- getSampleLineageBreakdown(clusterSamplesMCC, breaks="days")
+
+###################
+# Figure captions #
+###################
+sample_breakdown_daily_absolute_cap   <- 
+sample_breakdown_daily_proportion_cap <- "Lineage size breakdown of UK genomes collected each day. The 8 largest lineages are coloured."
+
+sample_breakdown_daily_absolute_top8_cap   <- "Lineage size breakdown of UK genomes in the largest 8 lineages collected each day."
+
+
+sample_breakdown_daily_lineages_absolute_cap   <- 
+sample_breakdown_daily_lineages_proportion_cap <- "Lineage size breakdown of UK genomes collected each day."
+
+sample_breakdown_daily_aggr_absolute_cap   <- 
+sample_breakdown_daily_aggr_proportion_cap <- "Lineage size breakdown of UK genomes collected each day."
+
+```
+
+
+
+```{r sample-breakdown-daily-absolute, fig.width=7, fig.height=3, fig.cap = sample_breakdown_daily_absolute_cap, eval=TRUE}
+
+par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+cols   <- c(mPal(unlist(countryPal), 0.75)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 0.75)) 
+border <- c(mPal(unlist(countryPal), 1)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 1)) 
+
+dateFreqDistribution(t(dailyBreakdown$clustSizesHybrid), dailyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=TRUE, 
+                     startDate = startDate, endDate = endDate, 
+                     col=cols, border = border, 
+                     ymax = 800, ylab = "Daily no. of sampled genomes")
+
+legendText1 <- c()
+for (cluster in colnames(dailyBreakdown$clustSizesHybrid)[1:8]) {
+    i    <- which(clusterStatsMCC$cluster == cluster)
+    size <- clusterStatsMCC$seqs[i]
+    duration <- lubridate::round_date(lubridate::date_decimal(clusterStatsMCC$mostrecent[i]), unit="day") -
+    lubridate::round_date(lubridate::date_decimal(clusterStatsMCC$tmrca[i]), unit="day")
+    clusterSimple <- paste(strsplit(cluster, split="_")[[1]][c(2,4)], collapse = "_")
+    legendText1   <- c(legendText1, sprintf("%s\n(%d genomes, %d days)", clusterSimple, size, duration))
+}
+legend("left", horiz=FALSE, inset=c(1,-0), bty='n', xpd=TRUE, ncol=1,
+           fill=cols[1:8], border = border[1:8], 
+           legend = legendText1, y.intersp = 2,
+           cex=0.6)
+
+legendText2 <- c(sprintf("Bigger than 100 (n = %d)", sum(clusterStatsMCC$seqs > 100) - 6),
+                 sprintf("11 to 100 (n = %d)", sum(clusterStatsMCC$seqs <= 100 & clusterStatsMCC$seqs > 10)), 
+                 sprintf("10 or smaller (n = %d)", sum(clusterStatsMCC$seqs <= 10)), 
+                 sprintf("Singletons (n = %d)", sum(metadata$country == "UK") - sum(clusterStatsMCC$seqs)))
+legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=2,
+       fill=cols[9:12], border = border[9:12], 
+       legend = legendText2, title = "Transmission lineage size",
+       cex=0.8)
+
+
+```
+
+```{r sample-breakdown-daily-absolute-top8, fig.width=14, fig.height=12, fig.cap = "The daily sampling frequency of the 8 largest UK transmission lineages.", eval=TRUE}
+
+    par(mar=c(4,4,2.5,8), cex.axis=1, cex.lab=1.2, cex.main=1.2, mgp=c(3,0.75,0))
+
+    cols   <- c(mPal(unlist(countryPal), 0.75)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 0.75)) 
+    border <- c(mPal(unlist(countryPal), 1)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 1)) 
+    layout(matrix(1:8, nrow=4))
+    for (i in 1:8) {
+      dateFreqDistribution(t(dailyBreakdown$clustSizesTop8[, i]), dailyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=TRUE, 
+                           startDate = startDate, endDate = endDate, 
+                           col=cols[i], border = border[i], 
+                           ymax = 80, ylab = "Daily no. of sampled genomes")
+      
+      mtext(side=3, line=0.5, gsub("\n", " ", legendText1[i]), cex=par("cex.main"))
+      
+      x <- -0.075*(endDate - startDate)
+      mtext(text = LETTERS[i], side=3, line=0.5, at=x, cex = par("cex.main"))
+    }
+
+```
+
+
+```{r sample-breakdown-daily-proportion, fig.width=7, fig.height=3, fig.cap = sample_breakdown_daily_proportion_cap, eval=TRUE}
+
+par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+cols <- c(mPal(unlist(countryPal), 0.75)[c(2,3,4,6,10,8,11,12)], gray.colors(n = 4, start=0.75, end=0, alpha = 0.75)) 
+
+dateFreqDistribution(t(dailyBreakdown$clustPropsHybrid), dailyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                     startDate = "2020-03-01", endDate = "2020-06-07", 
+                     col=cols, border = "#000000",
+                     ymax = 1, ylab = "Proportion of sampled genomes\n(per day)", axes=TRUE)
+
+
+legend("left", horiz=FALSE, inset=c(1,-0), bty='n', xpd=TRUE, ncol=1,
+       fill=cols[1:8], border = "#000000", 
+       legend = legendText1, y.intersp = 2,
+       cex=0.6)
+
+legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=2,
+       fill=cols[9:12], border = "#000000", 
+       legend = legendText2, title = "Transmission lineage size",
+       cex=0.8)
+
+
+```
+
+\clearpage
+
+```{r sample-breakdown-daily-lineages-absolute, fig.width=7, fig.height=3, fig.cap = sample_breakdown_daily_lineages_absolute_cap, eval=TRUE}
+
+par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+dateFreqDistribution(t(dailyBreakdown$clustSizes), dailyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                     startDate = startDate, endDate = endDate, 
+                     col=mPal(unlist(countryPal), 0.75), border = NA,
+                     ymax = 800, ylab = "Daily no. of sampled genomes")
+
+```
+
+
+```{r sample-breakdown-daily-lineages-proportion, fig.width=7, fig.height=3, fig.cap = sample_breakdown_daily_lineages_proportion_cap, eval=TRUE}
+
+par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+dateFreqDistribution(t(dailyBreakdown$clustProps), dailyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                     startDate = "2020-03-01", endDate = "2020-06-07", 
+                     col=mPal(unlist(countryPal), 0.75), border = "#000000CC",
+                     ymax = 1, ylab = "Proportion of sampled genomes\n(per day)", axes=TRUE)
+
+
+```
+
+\clearpage
+
+```{r sample-breakdown-daily-aggr-absolute, fig.width=7, fig.height=3, fig.cap = sample_breakdown_daily_aggr_absolute_cap, eval=TRUE}
+
+par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+dateFreqDistribution(t(dailyBreakdown$aggrSizes), dailyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=TRUE, 
+                     startDate = startDate, endDate = endDate, 
+                     col=mPal(unlist(ukPal), 0.75), border = mPal(unlist(ukPal)),
+                     ymax = 800, ylab = "Daily no. of sampled genomes")
+
+legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=3,
+       fill=mPal(unlist(ukPal), 0.75), border = mPal(unlist(ukPal)), 
+       legend = c("Bigger than 1000", "101 to 1000", "11 to 100", "10 or smaller", "Singletons"), title = "Transmission lineage size",
+       cex=0.8)
+
+```
+
+
+```{r sample-breakdown-daily-aggr-proportion, fig.width=7, fig.height=3, fig.cap = sample_breakdown_daily_aggr_proportion_cap, eval=TRUE}
+
+par(mar=c(4,4,2.5,8), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+
+
+dateFreqDistribution(t(dailyBreakdown$aggrProps), dailyBreakdown$sampleBreaks, plot.ci=FALSE,  barplot=FALSE, 
+                     startDate = "2020-03-01", endDate = "2020-06-07", 
+                     col=mPal(unlist(ukPal), 0.75), border = "#000000",
+                     ymax = 1, ylab = "Proportion of sampled genomes\n(per day)", axes=TRUE)
+
+legend("top", horiz=FALSE, inset=c(0,-0.33), bty='n', xpd=TRUE, ncol=3,
+       fill=mPal(unlist(ukPal), 0.75), border = "#000000", 
+       legend = c("Bigger than 1000", "101 to 1000", "11 to 100", "10 or smaller", "Singletons"), title = "Transmission lineage size",
+       cex=0.8)
+
+
+```
+
+
+\clearpage
+
+# Individual transmission lineage plots
+
+```{r lineage-duration-captions}
+
+    supp <- "Each row is a transmission lineage. Dots are genome sampling times (coloured by sampling location) and boxes show the range of sampling times for each transmission lineage (sampling duration). Asterisks show the median TMRCA of each lineage and the yellow bars show the 95% HPD of each TMRCA. On the right, n indicates the number of UK genomes in the lineage and the duration of lineage detection (time between the lineage’s oldest and most recent genomes). Sampling times of the first 500 SARS-CoV-2 genomes collected in the UK have been obscured."
+
+    lineage_duration_biggest_cap    <- paste0("Illustration of the time course of the 50 largest UK transmission lineages in our dataset. ", supp)
+    lineage_duration_earliest_cap   <- paste0("Illustration of the time course of the 50 earliest UK transmission lineages in our dataset. ", supp)
+    lineage_duration_newest_cap     <- paste0("Illustration of the time course of the 50 most recent (by TMRCA) UK transmission lineages in our dataset. ", supp)
+    lineage_duration_cryptic_cap    <- paste0("Illustration of the time course of the 50 UK transmission lineages in our dataset with the longest period of cryptic circulation. ", supp)
+    lineage_duration_longest_cap    <- paste0("Illustration of the time course of the 50 UK transmission lineages in our dataset with the longest sampling duration (from earliest to most recently collected genome). ", supp)
+    lineage_duration_unobserved_cap <- paste0("Illustration of the time course of the 50 UK transmission lineages  in our dataset with the longest unobserved period before reemerging. ", supp)
+
+```
+
+## Biggest transmission lineages
+
+```{r lineage-duration-biggest, fig.width=7, fig.height=9, fig.cap=lineage_duration_biggest_cap, eval=TRUE}
+    
+    par(mar=c(5,10,3,7), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    bigLineages <- clusterStatsMCC[order(clusterStatsMCC$seqs, decreasing = TRUE)[1:50], ]
+    plotLineageDurations(bigLineages, clusterSamplesMCC, startDate="2020-01-12", endDate="2020-06-28", cutoff=cutoff, orderby="")
+    
+```
+
+
+## Earliest transmission lineages
+
+```{r lineage-duration-earliest, fig.width=7, fig.height=9, fig.cap=lineage_duration_earliest_cap, eval=TRUE}
+    
+    par(mar=c(5,10,3,7), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    earlyLineages <- clusterStatsMCC[order(clusterStatsMCC$tmrca)[1:50], ]
+    plotLineageDurations(earlyLineages, clusterSamplesMCC, startDate="2020-01-12", endDate="2020-06-28", cutoff=cutoff, orderby="")
+    
+```
+
+
+## Newest transmission lineages
+
+```{r lineage-duration-newest, fig.width=7, fig.height=9, fig.cap=lineage_duration_newest_cap, eval=TRUE}
+    
+    par(mar=c(5,10,3,7), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    newLineages <- clusterStatsMCC[order(clusterStatsMCC$tmrca, decreasing = TRUE)[1:50], ]
+    plotLineageDurations(newLineages, clusterSamplesMCC, startDate="2020-01-12", endDate="2020-06-28", cutoff=cutoff)
+    
+```
+
+## Longest periods of cryptic circulation
+
+```{r lineage-duration-cryptic, fig.width=7, fig.height=9, fig.cap=lineage_duration_cryptic_cap, eval=TRUE}
+    
+    par(mar=c(5,10,3,7), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    longestCryptic <- clusterStatsMCC[order(clusterStatsMCC$oldest - clusterStatsMCC$tmrca, decreasing = TRUE)[1:50], ]
+    plotLineageDurations(longestCryptic, clusterSamplesMCC, startDate="2020-01-12", endDate="2020-06-28", cutoff=cutoff, orderby = "")
+    
+```
+
+## Longest sampling period
+
+```{r lineage-duration-longest, fig.width=7, fig.height=9, fig.cap=lineage_duration_longest_cap, eval=TRUE}
+    
+    par(mar=c(5,10,3,7), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    longestSampling <- clusterStatsMCC[order(clusterStatsMCC$mostrecent - clusterStatsMCC$oldest, decreasing = TRUE)[1:50], ]
+    plotLineageDurations(longestSampling, clusterSamplesMCC, startDate="2020-01-12", endDate="2020-06-28", cutoff=cutoff, orderby="")
+    
+```
+
+
+## Longest unobserved period before reactivating
+
+```{r lineage-longest-unobserved, fig.width=7, fig.height=9, fig.cap=lineage_duration_unobserved_cap, eval=TRUE}
+
+    clusterStatsMCC$longest_unobserved <- rep(0, nrow(clusterStatsMCC))
+    for (i in 1:nrow(clusterStatsMCC)) {
+        sampleTimes <- sort(clusterSamplesMCC$sample_date[clusterSamplesMCC$cluster == as.character(clusterStatsMCC$cluster[i])])
+        clusterStatsMCC$longest_unobserved[i] <- max(diff(sampleTimes))
+    }
+
+    par(mar=c(5,10,3,7), cex.axis=0.7, cex.lab=0.8, mgp=c(2,0.75,0))
+    reemergedLineages <- clusterStatsMCC[order(clusterStatsMCC$longest_unobserved, decreasing = TRUE)[1:50], ]
+    plotLineageDurations(reemergedLineages, clusterSamplesMCC, startDate="2020-01-12", endDate="2020-06-28", cutoff=cutoff, orderby = "longest_unobserved")
+
+```
+
+
+\clearpage
+
+# Session info
+
+```{r sessionInfo, results='markup'}
+    sessionInfo()
+```

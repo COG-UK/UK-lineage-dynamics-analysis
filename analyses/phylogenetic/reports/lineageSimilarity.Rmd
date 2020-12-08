@@ -1,0 +1,380 @@
+---
+title: "COVID-19 UK introductions"
+subtitle: "Lineage similarity (Jaccard indices)"
+author: "Louis du Plessis"
+date: '`r format(Sys.time(), "Last modified: %d %b %Y")`'
+output: 
+  github_document:
+    toc: true
+    toc_depth: 2
+layout: page
+editor_options: 
+  chunk_output_type: inline
+params: 
+  inputpath  :  "../results/combined_beast_dta/"
+  outputpath : "../results/combined_beast_dta/lineage_similarity/"
+  cluster_f  : DTA
+  ntrees     : 2000
+  metric     : "jaccard"
+  rowcores   : 10
+  colcores   : 4
+  
+---
+
+```{r rsetup, include=FALSE}
+  
+    library(tictoc)
+    library(parallel)
+    library(clusteval)
+    library(reshape2)
+    library(ggplot2)
+    library(viridis)
+    library(cowplot)
+    source("../scripts/palettes.R")
+
+    inputpath  <- params$inputpath
+    outputpath <- params$outputpath
+    cluster_f  <- params$cluster_f
+    ntrees     <- params$ntrees
+    metric     <- params$metric
+    
+    # Nr of cores to use for each row and col calculation. Max nr of cores used will be rowcores*colcores
+    rowcores   <- params$rowcores
+    colcores   <- params$colcores
+    
+    figpath    <- paste0(outputpath, "../figures/similarity_figures/")
+    cachepath  <- paste0(outputpath, "cache/")
+    dir.create(outputpath, recursive = TRUE, showWarnings = FALSE)
+    dir.create(figpath, recursive = TRUE, showWarnings = FALSE)
+
+    knitr::opts_chunk$set(tidy=FALSE, cache=FALSE, cache.path = cachepath, cache.lazy = FALSE,
+                          dev="png", dpi=300, fig.path=figpath, 
+                          message=FALSE, error=FALSE, warning=TRUE, echo=FALSE)
+
+```
+
+```{r functions} 
+
+    getPairwiseJaccard <- function(clustMat, colcores, rowcores) {
+      
+      # Get upper triangular matrix of Jaccard indices
+      n <- ncol(clustMat)
+      tic(paste0("\n\nPairwise calculation on a ", n, "x", n, " matrix: "))
+      jaccard <- mclapply(1:(n-1), function(i) {
+        c(rep(0, i-1), 
+          1, 
+          simplify2array(mclapply((i+1):n, function(j) cluster_similarity(clustMat[,i], clustMat[,j], similarity = metric), mc.cores = colcores)))
+      }, mc.cores=rowcores)
+      toc()
+      
+      # Process to a full symmetric matrix
+      jaccard <- cbind(simplify2array(jaccard), c(rep(0, n-1), 1))
+      jaccard <- jaccard + t(jaccard) - diag(n)
+      
+      return(jaccard)
+    }
+
+
+    getHeatMap <- function(jaccard, palette="inferno") {
+      
+        jaccard_df <- melt(jaccard)
+    
+        ggplot(data = jaccard_df, aes(x = Var1, y = Var2, fill=value)) +
+               geom_tile() + 
+               scale_fill_viridis(limit=c(0,1), name="Jaccard index", option=palette) + 
+               theme(axis.title.x = element_blank(),
+                     axis.title.y = element_blank(),
+                     axis.text.x  = element_blank(),
+                     axis.text.y  = element_blank(),
+                     panel.grid.major = element_blank(),
+                     panel.border = element_blank(),
+                     panel.background = element_blank(),
+                     axis.ticks = element_blank(),
+                     legend.position = "bottom",
+                     legend.direction = "horizontal") +
+               guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                                            title.position = "top", title.hjust = 0.5)) + 
+               coord_fixed()
+    }
+
+```
+
+
+```{r load-data, cache=TRUE, eval=TRUE}
+
+    clusterSamples    <- read.csv(paste0(inputpath, "clusterSamples_", cluster_f, ".csv"))
+    clusterSamplesMCC <- read.csv(paste0(inputpath, "clusterSamples_", cluster_f, "_MCC.csv"))
+    
+```
+
+# Summary
+Compare similarity of lineage assignments across posterior trees and the MCC tree, using the Jaccard index. Rand index is not suitable - because of the large number of lineages the Rand index is dominated by true negatives and essentially reduces to (1-eps)/1.
+
+## Input
+- Cluster statistics for MCC trees and across posterior trees as produced (in `inputpath`):
+    - `clusterSamples_DTA.csv`
+    - `clusterSamples_DTA_MCC_0.5.csv`
+
+## Output
+- Jaccard indices (in `.csv` files).
+- Jaccard index figures.
+
+
+# Calculate Jaccard indices
+
+## All pairs of posterior trees
+
+```{r jaccard-pairwise, results="asis", cache=TRUE, eval=TRUE}
+  
+    # Subset only ntrees of the posterior sample
+    clustMat <- sapply(2:min(ncol(clusterSamples), 1+ntrees), function(j) as.numeric(clusterSamples[, j]))
+
+    jaccard <- getPairwiseJaccard(clustMat, colcores, rowcores)
+    
+    # Save csv file
+    write.table(jaccard, paste0(outputpath, "jaccard_pairwise_", nrow(jaccard), ".csv"), quote=FALSE, row.names=FALSE, col.names=FALSE, sep=",")
+
+
+```
+
+```{r jaccard-pairwise-pertree, results="asis", cache=TRUE, eval=TRUE}
+
+# Get different large-scale trees
+trees <- unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1]))
+for (tree in trees) {
+    treeSamples <- clusterSamples[ grep(paste0("^", tree, "_"), clusterSamples[, 2]), ]
+    
+    # Something went wrong in selection process
+    if (any(!sapply(2:ncol(treeSamples), function(i) all(grepl(tree, treeSamples[, i]))))) {
+        stop("Error: Problem in selecting tree sequences.")
+    }
+    
+    # Subset only ntrees of the posterior sample
+    treeMat <- sapply(2:min(ncol(treeSamples), 1+ntrees), function(j) as.numeric(treeSamples[, j]))
+    
+    jaccard <- getPairwiseJaccard(treeMat, colcores, rowcores)
+
+    # Save csv file
+    write.table(jaccard, paste0(outputpath, "jaccard_pairwise_", tree, "_", nrow(jaccard), ".csv"), quote=FALSE, row.names=FALSE, col.names=FALSE, sep=",")
+    
+}
+
+```
+
+
+
+## MCC tree vs posterior trees
+
+```{r jaccard-mcc, results="asis", cache=TRUE, eval=TRUE}
+  
+    # Subset only ntrees of the posterior sample
+    clustMat    <- sapply(2:min(ncol(clusterSamples), 1+ntrees), function(j) as.numeric(clusterSamples[, j]))
+    clustMatMCC <- sapply(2:ncol(clusterSamplesMCC), function(j) as.numeric(clusterSamplesMCC[, j]))
+       
+    n <- ncol(clustMat)
+    m <- ncol(clustMatMCC)
+
+    tic(paste0("\n\nComparing ", m, " MCC trees to ", n, " posterior trees: "))
+    jaccardMCC <- mclapply(1:m, function(i) { 
+                                  simplify2array( mclapply(1:n, function(j) cluster_similarity(clustMatMCC[,i], clustMat[,j], similarity = metric), mc.cores=colcores) ) 
+                  }, mc.cores=rowcores) 
+    jaccardMCC <- simplify2array(jaccardMCC)
+    colnames(jaccardMCC) <- colnames(clusterSamplesMCC)[2:ncol(clusterSamplesMCC)]
+    toc()
+    
+    write.csv(jaccardMCC, paste0(outputpath, "jaccard_MCC_", n, ".csv"), quote=FALSE, row.names=FALSE)
+
+
+```
+
+```{r jaccard-mcc-pertree, results="asis", cache=TRUE, eval=TRUE}
+
+# Get different large-scale trees
+trees <- unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1]))
+for (tree in trees) {
+    treeSamples    <- clusterSamples[ grep(paste0("^", tree, "_"), clusterSamples[, 2]), ]
+    treeSamplesMCC <- clusterSamplesMCC[ grep(paste0("^", tree, "_"), clusterSamplesMCC[, 2]), ]
+    
+    # Something went wrong in selection process
+    if (any(!sapply(2:ncol(treeSamples),    function(i) all(grepl(tree, treeSamples[, i])))) || 
+        any(!sapply(2:ncol(treeSamplesMCC), function(i) all(grepl(tree, treeSamplesMCC[, i]))))) {
+        stop("Error: Problem in selecting tree sequences.")
+    }
+    
+    # Subset only ntrees of the posterior sample
+    treeMat    <- sapply(2:min(ncol(treeSamples), 1+ntrees), function(j) as.numeric(treeSamples[, j]))
+    treeMatMCC <- sapply(2:min(ncol(treeSamplesMCC), 1+ntrees), function(j) as.numeric(treeSamplesMCC[, j]))
+
+    n <- ncol(treeMat)
+    m <- ncol(treeMatMCC)
+
+    tic(paste0("\n\n", tree, ": Comparing ", m, " MCC trees to ", n, " posterior trees: "))
+    jaccardMCC <- mclapply(1:m, function(i) { 
+                                  simplify2array( mclapply(1:n, function(j) cluster_similarity(treeMatMCC[,i], treeMat[,j], similarity = metric), mc.cores=colcores) ) 
+                  }, mc.cores=rowcores) 
+    jaccardMCC <- simplify2array(jaccardMCC)
+    colnames(jaccardMCC) <- colnames(treeSamplesMCC)[2:ncol(treeSamplesMCC)]
+    toc()
+    
+    write.csv(jaccardMCC, paste0(outputpath, "jaccard_MCC_", tree, "_", n, ".csv"), quote=FALSE, row.names=FALSE)
+}
+
+```
+
+
+# Plot lineage similarity
+
+```{r jaccard-pairwise-heatmap, fig.width=10, fig.height=15, fig.cap="Pairwise Jaccard indices between the lineage assignments on the 2000 posterior trees."} 
+
+    
+    trees     <- unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1]))
+    labels    <- c("All", trees)
+    filenames <- paste0("jaccard_pairwise", 
+                        c("", paste0("_", unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1])))), 
+                        "_2000.csv")
+
+    heatmaps <- list()
+    for (i in 1:length(filenames)) {
+      jaccard  <- as.matrix(read.csv(paste0(outputpath, filenames[i]), header=FALSE))
+      heatmaps[[i]] <- getHeatMap(jaccard)
+    }
+    print(plot_grid(plotlist = heatmaps, nrow=3, labels=labels, align='vh')) 
+                          
+``` 
+
+Pairwise Jaccard indices between the lineage assignments on the 2000 posterior trees.
+
+
+
+```{r jaccard-summary, fig.width=7, fig.height=10, fig.cap="Median (solid line) pairwise and mean (dashed line) Jaccard indices between the lineage assignments on the 2000 posterior trees. Dark shading shows the interquartile range and ligher shading the 95% CI."} 
+
+    jaccard  <- as.matrix(read.csv(paste0(outputpath, filenames[1]), header=FALSE))
+
+    layout(matrix(1:2, nrow=2))
+
+    # Pairwise
+    q <- simplify2array(lapply(seq_len(ncol(jaccard)), function(i) quantile(jaccard[-i, i], probs = c(0.025, 0.25, 0.5, 0.75, 0.975))))
+    q <- data.frame(t(q))
+    m <- sapply(seq_len(ncol(jaccard)), function(i) mean(jaccard[-i, i]))
+    plotOrder <- order(m, decreasing = TRUE)
+    
+    plot(1, type='n', xlim=c(1, nrow(jaccard)+1), ylim=c(0,1), xlab="Posterior trees\n(ordered by mean pairwise Jaccard index)", ylab="Jaccard index", axes=FALSE)
+    axis(2, las=1)
+    grid(nx=NA, ny=NULL, lwd=0.5, col="#000000")
+    
+    lines(1:nrow(jaccard), q$X50.[plotOrder], col=mPal(ukPal$eng, 0.75), lwd=1)
+    lines(1:nrow(jaccard), m[plotOrder], col=mPal(ukPal$eng), lwd=2, lty=2)
+    polygon(c(1:nrow(jaccard), nrow(jaccard):1), c(q$X97.5.[plotOrder], rev(q$X2.5.[plotOrder])), border=NA, col = mPal(ukPal$eng, 0.25))
+    polygon(c(1:nrow(jaccard), nrow(jaccard):1), c(q$X75.[plotOrder], rev(q$X25.[plotOrder])), border=NA, col = mPal(ukPal$eng, 0.5))
+    
+    mtext("A", side=3, line=1, at=-0.15*2000, cex = par("cex.main"))
+
+
+    # MCC
+    cutoff <- 0.5
+    col    <- paste0("cutoff_",cutoff)
+
+    jaccardMCC <- read.csv(paste0(outputpath, "jaccard_MCC_2000.csv"))
+
+    plotOrder <- order(jaccardMCC[, col], decreasing=TRUE)
+
+    plot(1, type='n', xlim=c(1, nrow(jaccardMCC)+1), ylim=c(0,1), xlab="Posterior trees\n(ordered by Jaccard index)", ylab="Jaccard index", axes=FALSE)
+    axis(2, las=1)
+    grid(nx=NA, ny=NULL, lwd=0.5, col="#000000")
+    
+    q <- quantile(jaccardMCC[, col], probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+    rect(-100, q[1], nrow(jaccardMCC)+100, q[5], border=NA, col=mPal(ukPal$eng, 0.25))
+    rect(-100, q[2], nrow(jaccardMCC)+100, q[4], border=NA, col=mPal(ukPal$eng, 0.5))
+    abline(h=q[3], col=mPal(ukPal$eng))
+    #abline(h=mean(jaccardMCC[, col]), col=mPal(ukPal$eng), lty=2)
+
+    
+    lines(1:nrow(jaccardMCC), jaccardMCC[plotOrder, col], col=mPal(ukPal$sct), lwd=2)
+    #points(1:nrow(jaccardMCC), jaccardMCC[plotOrder, col], col=mPal(ukPal$sct), pch=20, cex=0.1)
+    
+    mtext("B", side=3, line=1, at=-0.15*2000, cex = par("cex.main"))
+```
+
+**(A)** Median (solid line) and mean (dashed line) Jaccard indices comparing the classification of UK genomes into transmission lineages and singletons on each of the 2000 posterior trees to the 1999 other trees. Dark shading shows the interquartile range and lighter shading the 95% CI. **(B)** Jaccard indices comparing the classification of UK genomes into transmission lineages and singletons on the MCC trees to each of the 2000 posterior trees (blue line). The solid red line indicates the median Jaccard index, dark shading the interquartile range and lighter shading the 95% CI. 
+
+
+
+```{r jaccard-summary-trees, fig.width=14, fig.height=15, fig.cap="Median (solid line) pairwise and mean (dashed line) Jaccard indices between the lineage assignments on the 2000 posterior trees. Dark shading shows the interquartile range and ligher shading the 95% CI."} 
+
+    trees     <- unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1]))
+    labels    <- c("All", trees)
+    filenames <- paste0("jaccard_pairwise", 
+                        c("", paste0("_", unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1])))), 
+                        "_2000.csv")
+
+    layout(matrix(1:6, nrow=3))
+    for (i in 1:length(filenames)) {
+          jaccard  <- as.matrix(read.csv(paste0(outputpath, filenames[i]), header=FALSE))
+
+          # Pairwise
+          q <- simplify2array(lapply(seq_len(ncol(jaccard)), function(i) quantile(jaccard[-i, i], probs = c(0.025, 0.25, 0.5, 0.75, 0.975))))
+          q <- data.frame(t(q))
+          m <- sapply(seq_len(ncol(jaccard)), function(i) mean(jaccard[-i, i]))
+          plotOrder <- order(m, decreasing = TRUE)
+          
+          plot(1, type='n', xlim=c(1, nrow(jaccard)+1), ylim=c(0,1), xlab="Posterior trees\n(ordered by mean pairwise Jaccard index)", ylab="Jaccard index", axes=FALSE)
+          axis(2, las=1)
+          grid(nx=NA, ny=NULL, lwd=0.5, col="#000000")
+          
+          lines(1:nrow(jaccard), q$X50.[plotOrder], col=mPal(ukPal$eng, 0.75), lwd=1)
+          lines(1:nrow(jaccard), m[plotOrder], col=mPal(ukPal$eng), lwd=2, lty=2)
+          polygon(c(1:nrow(jaccard), nrow(jaccard):1), c(q$X97.5.[plotOrder], rev(q$X2.5.[plotOrder])), border=NA, col = mPal(ukPal$eng, 0.25))
+          polygon(c(1:nrow(jaccard), nrow(jaccard):1), c(q$X75.[plotOrder], rev(q$X25.[plotOrder])), border=NA, col = mPal(ukPal$eng, 0.5))
+          
+          mtext(labels[i], side=3, line=1, at=-0.05*2000, cex = par("cex.main"))
+    }
+
+```
+
+Medians (solid lines) and means (dashed lines) Jaccard indices comparing the classification of UK genomes into transmission lineages and singletons on each of the 2000 posterior trees to the 1999 other trees, for the complete dataset and for each of the large-scale phylogenies individually. Dark shading shows the interquartile range and lighter shading the 95% CI. 
+
+
+```{r jaccard-summary-trees-mcc, fig.width=14, fig.height=15, fig.cap="Median (solid line) pairwise and mean (dashed line) Jaccard indices between the lineage assignments on the 2000 posterior trees. Dark shading shows the interquartile range and ligher shading the 95% CI."} 
+
+    trees     <- unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1]))
+    labels    <- c("All", trees)
+    filenames <- paste0("jaccard_MCC", 
+                        c("", paste0("_", unique(sapply(levels(clusterSamples$tree1), function(x) strsplit(x, "_")[[1]][1])))), 
+                        "_2000.csv")
+
+    layout(matrix(1:6, nrow=3))
+    for (i in 1:length(filenames)) {
+          
+          # MCC
+          cutoff <- 0.5
+          col    <- paste0("cutoff_",cutoff)
+      
+          jaccardMCC <- as.matrix(read.csv(paste0(outputpath, filenames[i]), header=TRUE))
+      
+          plotOrder  <- order(jaccardMCC[, col], decreasing=TRUE)
+      
+          plot(1, type='n', xlim=c(1, nrow(jaccardMCC)+1), ylim=c(0,1), xlab="Posterior trees\n(ordered by Jaccard index)", ylab="Jaccard index", axes=FALSE)
+          axis(2, las=1)
+          grid(nx=NA, ny=NULL, lwd=0.5, col="#000000")
+          
+          q <- quantile(jaccardMCC[, col], probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+          rect(-100, q[1], nrow(jaccardMCC)+100, q[5], border=NA, col=mPal(ukPal$eng, 0.25))
+          rect(-100, q[2], nrow(jaccardMCC)+100, q[4], border=NA, col=mPal(ukPal$eng, 0.5))
+          abline(h=q[3], col=mPal(ukPal$eng))
+          #abline(h=mean(jaccardMCC[, col]), col=mPal(ukPal$eng), lty=2)
+      
+          lines(1:nrow(jaccardMCC), jaccardMCC[plotOrder, col], col=mPal(ukPal$sct), lwd=2)
+          #points(1:nrow(jaccardMCC), jaccardMCC[plotOrder, col], col=mPal(ukPal$sct), pch=20, cex=0.1)
+          t
+          mtext(labels[i], side=3, line=1, at=-0.05*2000, cex = par("cex.main"))
+    }
+
+```
+
+Jaccard indices comparing the classification of UK genomes into transmission lineages and singletons on the MCC trees to each of the 2000 posterior trees (blue line), for the complete dataset and for each of the large-scale phylogenies individually. The solid red line indicates the median Jaccard index, dark shading the interquartile range and lighter shading the 95% CI. 
+
+# Session info
+
+```{r sessionInfo, results='markup'}
+    sessionInfo()
+```
