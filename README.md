@@ -48,7 +48,7 @@ The [`analyses`](analyses/) directory contains sub-directories containing the de
     to run the included scripts to carry out the epidemiological analysis. The
     output goes into the [`results`](analyses/epidemiological/results/) directory.
 - **Phylogenetic analyses:** The `phylogenetic` directory contains a [`README.md`](analyses/phylogenetic/README.md) file describing how to run the analyses. Minimal output is included in the [`results`](analyses/phylogenetic/results/) directory.
-- **Spatial analyses:** The `spatial` directory constains a [`README.md`](analyses/spatial/README.md) file describing how to process adm2 regions and output files stored in the [`results`](analyses/spatial/results/) directory.
+- **Spatial analyses:** The `spatial` directory contains a [`README.md`](analyses/spatial/README.md) file describing how to process adm2 regions and output files stored in the [`results`](analyses/spatial/results/) directory.
 
 
 
