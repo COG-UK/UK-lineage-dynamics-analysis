@@ -30,7 +30,7 @@ mv WPP2019_TotalPopulationBySex.csv raw-data/un-population.csv
 #+end_src
 
 We retrieved data of percentage of country populations living in poverty from
-the World Bank, as curated by the team at Our World in data and extracted
+the World Bank, as curated by the team at Our World in Data and extracted
 estimates of percentages of populations living in poverty from Elvidge /et al/
 (2009) to supplement the World Bank measurements.
 
@@ -39,7 +39,7 @@ estimates of percentages of populations living in poverty from Elvidge /et al/
 The spatial resolution in the JHU data set varies between countries, in some
 instances we need to sum over the different states, such as Australia, and in
 some instances we only select the region with the most cases, such as with
-France where various provinces are not counted into the primary French death
+France where various provinces are not included in the primary French death
 toll. 
 
 The path to the data has the =2020-08-19= directory in it because this is a time
@@ -129,7 +129,7 @@ The JHU data has the cumulative number of deaths in each location on each date,
 but we want the actual number of deaths on each day so for each location we
 calculate the daily difference in the cumulative number of deaths and use that.
 For some days, the cumulative count decreases due to changes in the official
-numbers, on these days we set the daily value to zero. Since differencing
+numbers, on these days we set the daily value to zero. Since subtracting
 reduces the length of a vector by one, we remove the first date from all of the
 countries data.
 
