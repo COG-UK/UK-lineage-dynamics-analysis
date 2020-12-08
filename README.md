@@ -5,9 +5,10 @@
 ---
 
 This repository contains the data and code used to generate the results
-presented in *PAPER DOI*. 
+presented in *PAPER DOI*. Some of the scripts may need some adjustment depending on the local setup.
 
-Note that because of the GISAID [terms of use](https://www.gisaid.org/registration/terms-of-use/) genomic sequences cannot be shared in this repository. Instead, we make the GISAID accessions available and provide a table of acknowledgements. All genomic sequences produced by COG-UK are available [here](https://www.cogconsortium.uk/data/).
+Note that because of the GISAID [terms of use](https://www.gisaid.org/registration/terms-of-use/) genomic sequences cannot be shared in this repository. Instead, we make the GISAID accessions available and provide a table of acknowledgements. Note also that we cannot make administrative level two (adm2) metadata for genomic sequences available. All genomic sequences produced by COG-UK are available [here](https://www.cogconsortium.uk/data/).
+
 
 ## Abstract
 
@@ -16,39 +17,43 @@ _The UK’s COVID-19 epidemic during early 2020 was one of world’s largest and
 
 ## Repository usage and structure
 
-The structure of this repository is shown in the following tree output.
+The structure of this repository is shown below:
 
 ```
 uk-intros-analyses/
 ├── analyses
 │   ├── epidemiological
 │   ├── phylogenetic
-│   └── spatial
+│   ├── spatial
+│   └── README.md
 ├── data
 │   ├── epidemiological
 │   ├── phylogenetic
-│   └── spatial
-├── LICENSE
+│   ├── spatial
+│   └── README.md
+├── LICENSE.md
+├── LICENSE.gpl.md
 └── README.md
 ```
 
-- **Input data**: All input data that we are able to share publicly are stored in the [`data`](data/) directory.
-- **Analyses:** The [`analyses`](analyses/) directory contains directories containing the details of each
-  type of analysis.
-  + **Epidemiological analyses:** The `epidemiological` directory contains a [`README.org`](analyses/epidemiological/README.org) file describing how
+### Input data
+
+All input data that we are able to share publicly are stored in the [`data`](data/) directory.
+
+### Analyses
+
+The [`analyses`](analyses/) directory contains sub-directories containing the details of each type of analysis:
+
+- **Epidemiological analyses:** The `epidemiological` directory contains a [`README.org`](analyses/epidemiological/README.org) file describing how
     to run the included scripts to carry out the epidemiological analysis. The
-    output goes into a `results` directory.
-  + **Phylogenetic analyses:**
-  + **Spatial analyses:**
+    output goes into the [`results`](analyses/epidemiological/results/) directory.
+- **Phylogenetic analyses:** The `phylogenetic` directory contains a [`README.md`](analyses/phylogenetic/README.md) file describing how to run the analyses. Minimal output is included in the [`results`](analyses/phylogenetic/results/) directory.
+- **Spatial analyses:** The `spatial` directory constains a [`README.md`](analyses/spatial/README.md) file describing how to process adm2 regions and output files stored in the [`results`](analyses/spatial/results/) directory.
 
 
-- The `data` directory contains all of the input data for the analyses which we
-  are able to share publicly.
-- 
-  + The `epidemiological` directory contains a `README.md` file describing how
-    to run the included scripts to carry out the epidemiological analysis. The
-    output goes into a `results` directory.
-  + The `phylogenetic` and `spatial` directories follow the same layout as the
-    `epidemiological` directory.
 
+## License
 
+Except where otherwise noted the content of this project is licensed under the [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/), and all source code (unless otherwise noted) is licensed under the [GNU General Public License v3.0](https://choosealicense.com/licenses/gpl-3.0/).
+
+---
