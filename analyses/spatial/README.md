@@ -1,4 +1,4 @@
-# Spatial Analysis
+# Spatial Analyses
 
 ## Preparing_adm2.ipynb
 
@@ -8,28 +8,22 @@ the Global Administrative Database (GADM).
 
 ### Inputs
 
+Input data can be found in [`data/spatial/`](../../data/spatial/).
+
 - Three geojsons containing map shapes one each for the UK, Northern Ireland
   counties and the channel islands:
-  * `"UK.json"`
-  * `"NI_counties.geojson"`
-  * `"channel_islands.json"`
+  * `UK.json`
+  * `NI_counties.geojson`
+  * `channel_islands.json`
   
-- A csv file containing cleaning information converting data found in sequence
+- A `.csv` file containing cleaning information converting data found in sequence
   metadata to the true admin2 region: `adm2_cleaning.csv` This involves
   correcting spelling mistakes, identifying the correct adm2 region for a more
   precise region (eg Solihull --> Birmingham) and merging some real adm2 regions
   together to form what is in the sequence metadata (eg West Midlands).
   
-- Sequence metadata (not provided here as it contains non-shareable information)
-
-- Mapping files for the England, Wales and Scotland in the spatial data are
-  taken from the [Global Adminstrative Database](https://gadm.org/).
-
-- Mapping files for Northern Irish counties were taken from [Open Data
-  NI](https://www.opendatani.gov.uk/dataset?tags=Counties)
-
-- Mapping files for the channel islands were taken from
-  https://gist.github.com/markmarkoh
+- Sequence metadata ([`data/phylogenetic/metadata.csv`](../../data/phylogenetic/metadata.csv), 
+  but with adm2 metadata included. These data are not shareable and not provided here).
 
 
 ### How it runs
@@ -73,3 +67,13 @@ the Global Administrative Database (GADM).
 - A dataframe containing polygons of locations which correspond to cleaned
   locations
 
+
+## Other output files
+
+### Lineage diversity estimates for all locations
+
+- [`All_locs_raw_data_over_time.tsv`](results/All_locs_raw_data_over_time.tsv): Tab-separated file, containing the Shannon Indices of each cleaned location in the UK per week for the duration of the dataset (2nd February to 21st June). The average Shannon Index over the whole time is also shown for each location.
+
+### Summaries of UK transmission lineages and singletons
+
+- [`MCC_lineage_summaries.csv`](results/MCC_lineage_summaries.csv): Comma-separated file, containing summaries of each lineage assigned in the MCC tree. Note that the latest sequence date and days between earliest and latest sequence is up to and including 26th June 2020; some of the lineages will have persisted beyond this date.
