@@ -1,6 +1,6 @@
 # Establishment & lineage dynamics of the SARS-CoV-2 epidemic in the UK
 
-**Louis du Plessis**, **John T. McCrone**, **Alexander E. Zarebski**, **Verity Hill**,  Christopher Ruis, Bernardo Gutierrez, Jayna Raghwani, Jordan Ashworth, Rachel Colquhoun, Thomas R. Connor, Nuno R. Faria, Ben Jackson, Nicholas J. Loman, Áine O’Toole, Samuel M. Nicholls, Kris V. Parag, Emily Scher, Tetyana I. Vasylyeva, Erik M. Volz, Alexander Watts, Isaac I. Bogoch, Kamran Khan, the COVID-19 Genomics UK (COG-UK) Consortium, David M. Aanensen, **Moritz U. G. Kraemer**, **Andrew Rambaut**, **Oliver G. Pybus**
+**Louis du Plessis**, **John T. McCrone**, **Alexander E. Zarebski**, **Verity Hill**,  **Christopher Ruis**, Bernardo Gutierrez, Jayna Raghwani, Jordan Ashworth, Rachel Colquhoun, Thomas R. Connor, Nuno R. Faria, Ben Jackson, Nicholas J. Loman, Áine O’Toole, Samuel M. Nicholls, Kris V. Parag, Emily Scher, Tetyana I. Vasylyeva, Erik M. Volz, Alexander Watts, Isaac I. Bogoch, Kamran Khan, the COVID-19 Genomics UK (COG-UK) Consortium, David M. Aanensen, **Moritz U. G. Kraemer**, **Andrew Rambaut**, **Oliver G. Pybus**
 
 [![DOI](https://zenodo.org/badge/304057254.svg)](https://zenodo.org/badge/latestdoi/304057254)
 
